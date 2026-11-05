@@ -408,6 +408,14 @@ cortex-a53 (ARMv8.0, fine on the A57).
   with an HFS+ root image dd'd into it, boot with `rd=sdroot0`.
   Until then: RAM disk root (`rd=md0`).
 
+`tools/nx-sdcard.sh OUTDIR KERNEL [--ramdisk ROOT.img] [--bl31 F]
+[--cmdline ...] [--cpus N]` does the whole chain below (ADT with 4 CPUs,
+payload, shim build) and writes an SD layout to OUTDIR
+(`switchroot/ios/bl33.bin`, optional `bl31.bin`,
+`bootloader/ini/ios-nx.ini`). It adds `cpus=N` (default 1) and `rd=md0`
+with a RAM disk, else `rd=sdroot0`. Tested with the synthetic kernel +
+a 64 KiB dummy RAM disk. It writes no device.
+
 First NX kernel boot (once CI has built one):
 `tools/mkadt-nx.py nx.adt` ->
 `tools/mkpayload.py KERNEL nx.adt payload.bin --ramdisk ROOT.img

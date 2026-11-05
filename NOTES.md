@@ -432,6 +432,16 @@ payload, shim build) and writes an SD layout to OUTDIR
 with a RAM disk, else `rd=sdroot0`. Tested with the synthetic kernel +
 a 64 KiB dummy RAM disk. It writes no device.
 
+**First kernel test = `--init`**: `tools/nx-sdcard.sh OUT KERNEL --init`
+builds `tools/sweet-init.S` with the local clang (`-target
+arm64-apple-ios16.0 -c` gives a Mach-O object; no Apple toolchain needed)
++ `tools/mkinit.py` (static, ad-hoc signed arm64 executable, 16,635
+bytes) and uses it as the RAM disk with `rd=md0`. mockfs (topaz 0021)
+serves the RAM disk itself as `/sbin/launchd`, so there's no filesystem
+to build. Expected on screen: `*** SWEET userspace: init running as
+PID 1 ***` + heartbeat. Tested with the synthetic kernel (RAM disk
+segment 0x8000 at PA 0x101010000).
+
 First NX kernel boot (once CI has built one):
 `tools/mkadt-nx.py nx.adt` ->
 `tools/mkpayload.py KERNEL nx.adt payload.bin --ramdisk ROOT.img

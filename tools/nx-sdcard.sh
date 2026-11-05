@@ -2,7 +2,12 @@
 # Assemble the SD card files for booting XNU on the Switch through hekate.
 #
 #   tools/nx-sdcard.sh OUTDIR KERNEL [--ramdisk ROOT.img] [--bl31 bl31.bin]
-#                      [--cmdline "..."] [--cpus N] [--log]
+#                      [--cmdline "..."] [--cpus N] [--log] [--init]
+#
+# --init: the RAM disk is tools/sweet-init.S as a static Mach-O (built here
+# with clang -target arm64-apple-ios16.0 + tools/mkinit.py). With rd=md0
+# mockfs serves it as /sbin/launchd: the first test of the kernel reaching
+# userland ("SWEET userspace: init running as PID 1", then a heartbeat).
 #
 # --log adds sdlog=1: the kernel writes its console log to the SD card's
 # GPT partition "ioslog" (xnu patch 0207). Read it on a PC with
@@ -21,7 +26,7 @@ TREE=$(cd "$(dirname "$0")/.." && pwd)
 out=${1:?usage: nx-sdcard.sh OUTDIR KERNEL [options]}
 kernel=${2:?usage: nx-sdcard.sh OUTDIR KERNEL [options]}
 shift 2
-ramdisk= bl31= cpus=1 extra=
+ramdisk= bl31= cpus=1 extra= init=
 cmdline="debug=0xc keepsyms=1 -noprogress"
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -30,19 +35,24 @@ while [ $# -gt 0 ]; do
 	--cmdline) cmdline=$2; shift 2 ;;
 	--cpus) cpus=$2; shift 2 ;;
 	--log) extra="$extra sdlog=1"; shift ;;
+	--init) init=1; shift ;;
 	*) echo "unknown option $1" >&2; exit 1 ;;
 	esac
 done
 cmdline="$cmdline$extra"
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+if [ -n "$init" ]; then
+	clang -target arm64-apple-ios16.0 -c "$TREE/tools/sweet-init.S" -o "$work/sweet-init.o"
+	python3 "$TREE/tools/mkinit.py" "$work/sweet-init.o" "$work/sweet-init"
+	ramdisk=$work/sweet-init
+fi
 # Root: the RAM disk if given, else the SD card partition "ios".
 if [ -n "$ramdisk" ]; then
 	cmdline="$cmdline cpus=$cpus rd=md0"
 else
 	cmdline="$cmdline cpus=$cpus rd=sdroot0"
 fi
-
-work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
 python3 "$TREE/tools/mkadt-nx.py" "$work/nx.adt" --cpus 4
 python3 "$TREE/tools/mkpayload.py" "$kernel" "$work/nx.adt" "$work/payload.bin" \
 	--cmdline "$cmdline" ${ramdisk:+--ramdisk "$ramdisk"}

@@ -405,6 +405,18 @@ cpus=4 to test PSCI + the EL2 drop + SGIs.
   failed to enumerate (descriptor read -71/-110, address -62), likely
   the Switch on a bad cable/port. Another device on `usb 3-4` kept
   failing to enumerate the whole time (not the Switch).
+- Port matters for permissions: on `usb 1-1` the RCM node gets
+  `root:adbusers` + a user ACL (uaccess) and fusee-nano works as user j.
+  On `usb 3-3` it was `crw------- root` with no ACL -> "Permission
+  denied". Use port 1-1.
+- **RCM ping test (13:26): payload execution confirmed.**
+  `tools/rcm-test/rcm_ping.bin` (80 bytes, ARMv4T, PC-relative: waits
+  3 s on TIMERUS, then PMC_SCRATCH0 bit 1 + PMC_CNTRL MAIN_RST). Sent at
+  13:26:22.88; USB disconnect at 13:26:25.90 (3.0 s); re-enumerated as
+  RCM (device 46) at 13:26:26.24. So: the exploit, BPMP execution,
+  TIMERUS and reboot-to-RCM all work. hekate's black screen is therefore
+  the panel/backlight or hekate dying in early init (DRAM, PMIC, display),
+  not the transfer. Open question for the user: does Horizon show a picture?
 - User suspects a **faulty charger**. Until the Switch can show
   hekate's screen, nothing else can be tested on hardware. Next try: a
   known-good charger and cable, the PC's rear port `usb 1-1`, then

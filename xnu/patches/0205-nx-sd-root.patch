@@ -1,0 +1,851 @@
+From 1d9614d69b5c06f59225d34ea43042d3857ab7dc Mon Sep 17 00:00:00 2001
+From: x <x@x>
+Date: Thu, 5 Nov 2026 13:34:40 -0800
+Subject: [PATCH] nx-0205: SD card root device (rd=sdroot0, sdroot=NAME|mbr:N,
+ sdrw=1), polled PIO on SDMMC1
+
+---
+ bsd/conf/files                |   1 +
+ bsd/dev/nx_sdmmc.c            | 791 ++++++++++++++++++++++++++++++++++
+ iokit/bsddev/IOKitBSDInit.cpp |  15 +
+ 3 files changed, 807 insertions(+)
+ create mode 100644 bsd/dev/nx_sdmmc.c
+
+diff --git a/bsd/conf/files b/bsd/conf/files
+index c2864ab..4e06104 100644
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -105,6 +105,7 @@ bsd/dev/random/randomdev.c		standard
+ 
+ bsd/dev/memdev.c			standard
+ bsd/dev/sweet_ufs.c			standard
++bsd/dev/nx_sdmmc.c			standard
+ bsd/dev/redwood_sta.c		standard
+ bsd/dev/redwood_net.c		standard
+ bsd/dev/redwood_apple80211.c	standard
+diff --git a/bsd/dev/nx_sdmmc.c b/bsd/dev/nx_sdmmc.c
+new file mode 100644
+index 0000000..30c4ba2
+--- /dev/null
++++ b/bsd/dev/nx_sdmmc.c
+@@ -0,0 +1,791 @@
++/*
++ * Nintendo Switch SD card root device (Tegra X1 SDMMC1: SDHCI + Tegra
++ * vendor registers).
++ *
++ * hekate powers the card off before it starts BL33, so shim-nx powers it
++ * up again (pads, MAX77620 LDO2, PMC IO power, CAR module and timeout
++ * clocks; see shim-nx/sdmmc.c and NOTES.md). This driver takes the
++ * controller from there: software reset, Tegra trims and pad calibration,
++ * card identification, 4-bit bus at 24.7 MHz, then polled PIO (no DMA, so
++ * no cache maintenance). It finds one partition (boot-arg sdroot=: a GPT
++ * partition name, default "ios", or "mbr:N" for MBR slot N, 1-4) and
++ * exposes it as the BSD disk sdroot0 (rsdroot0), 512-byte sectors. Root on
++ * it with rd=sdroot0.
++ *
++ * Writes are refused unless boot-arg sdrw=1. Every write is checked
++ * against the partition bounds again right before it is issued.
++ */
++#include <sys/param.h>
++#include <sys/types.h>
++#include <sys/errno.h>
++
++int nx_sdmmc_rootdev(dev_t *dev);
++
++#if defined(NX_SWITCH)
++#include <sys/systm.h>
++#include <sys/buf.h>
++#include <sys/conf.h>
++#include <sys/disk.h>
++#include <sys/proc.h>
++#include <sys/uio.h>
++#include <miscfs/devfs/devfs.h>
++#include <kern/locks.h>
++#include <kern/clock.h>
++#include <kern/kalloc.h>
++#include <machine/machine_routines.h>
++#include <pexpert/pexpert.h>
++#include <pexpert/device_tree.h>
++#include <libkern/libkern.h>
++
++/* osfmk/arm/machine_routines.h, not exported to the BSD layer */
++extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
++
++/* SDHCI standard registers */
++#define SD_BLKSIZE      0x04    /* 16 */
++#define SD_BLKCNT       0x06    /* 16 */
++#define SD_ARG          0x08
++#define SD_TRNMOD_CMD   0x0C    /* transfer mode (16) | command (16) << 16 */
++#define  TRN_BLKCNT_EN  (1u << 1)
++#define  TRN_AUTO_CMD12 (1u << 2)
++#define  TRN_READ       (1u << 4)
++#define  TRN_MULTI      (1u << 5)
++#define  CMD_DATA       (1u << 5)
++#define  CMD_IDX_CHK    (1u << 4)
++#define  CMD_CRC_CHK    (1u << 3)
++#define  RSP_NONE       0u
++#define  RSP_136        1u
++#define  RSP_48         2u
++#define  RSP_48_BUSY    3u
++#define SD_RESP0        0x10
++#define SD_BUFFER       0x20
++#define SD_PRESENT      0x24
++#define  PS_CMD_INHIBIT (1u << 0)
++#define  PS_DAT_INHIBIT (1u << 1)
++#define SD_HOSTCTL      0x28    /* 8 */
++#define  HC_4BIT        (1u << 1)
++#define SD_PWRCON       0x29    /* 8 */
++#define  PWR_ON         (1u << 0)
++#define  PWR_330        (7u << 1)
++#define SD_CLKCON       0x2C    /* 16 */
++#define  CLK_INT_EN     (1u << 0)
++#define  CLK_INT_STABLE (1u << 1)
++#define  CLK_CARD_EN    (1u << 2)
++#define  CLK_PROG_MODE  (1u << 5)
++#define SD_TIMEOUT      0x2E    /* 8 */
++#define SD_SWRST        0x2F    /* 8 */
++#define  RST_ALL        (1u << 0)
++#define  RST_CMD        (1u << 1)
++#define  RST_DAT        (1u << 2)
++#define SD_INTSTS       0x30    /* normal (16) | error (16) << 16, write 1 to clear */
++#define  INT_CMD_DONE   (1u << 0)
++#define  INT_XFER_DONE  (1u << 1)
++#define  INT_BUF_WR     (1u << 4)
++#define  INT_BUF_RD     (1u << 5)
++#define  INT_ERR        (1u << 15)
++#define SD_NORINTEN     0x34    /* 16 */
++#define SD_ERRINTEN     0x36    /* 16 */
++#define SD_HOSTCTL2     0x3E    /* 16 */
++#define  HC2_PRESET_EN  (1u << 15)
++#define  HC2_VDD_180    (1u << 3)
++
++/* Tegra vendor registers (values for T210 SDMMC1 at 3.3 V, see NOTES.md) */
++#define SD_VENCLKCTL    0x100
++#define SD_IOTRIMCTL    0x1AC
++#define SD_CMPPADCTL    0x1E0
++#define  PAD_E_INPUT_PWRD (1u << 31)
++#define SD_AUTOCALCFG   0x1E4
++#define  AUTOCAL_ENABLE (1u << 29)
++#define  AUTOCAL_START  (1u << 31)
++#define SD_AUTOCALSTS   0x1EC
++#define  AUTOCAL_ACTIVE (1u << 31)
++#define SD_IOSPARE      0x1F0
++
++#define SECTOR          512u
++#define CHUNK_BLOCKS    2048u           /* blocks per multi-block command (1 MiB) */
++#define CMD_TIMEOUT_US  100000u
++#define DATA_TIMEOUT_US 1000000u
++#define BUSY_TIMEOUT_US 2000000u
++
++static struct {
++	vm_offset_t regs;
++	bool sdhc;                      /* block addressing (SDHC/SDXC) */
++	uint32_t rca;
++	uint64_t card_blocks;           /* whole card, 512-byte blocks */
++	uint64_t first_block, nblocks;  /* partition */
++	bool writable;                  /* boot-arg sdrw=1 */
++	int bmajor, cmajor;
++	dev_t bdev;
++	bool ready;
++	uint32_t last_err;              /* INTSTS of the last failure */
++} sd;
++
++static LCK_GRP_DECLARE(nx_sdmmc_grp, "nx_sdmmc");
++static LCK_MTX_DECLARE(nx_sdmmc_lock, &nx_sdmmc_grp);
++
++static inline uint32_t
++rd32(uint32_t off)
++{
++	return *(volatile uint32_t *)(sd.regs + off);
++}
++
++static inline void
++wr32(uint32_t off, uint32_t v)
++{
++	*(volatile uint32_t *)(sd.regs + off) = v;
++}
++
++static inline uint16_t
++rd16(uint32_t off)
++{
++	return *(volatile uint16_t *)(sd.regs + off);
++}
++
++static inline void
++wr16(uint32_t off, uint16_t v)
++{
++	*(volatile uint16_t *)(sd.regs + off) = v;
++}
++
++static inline uint8_t
++rd8(uint32_t off)
++{
++	return *(volatile uint8_t *)(sd.regs + off);
++}
++
++static inline void
++wr8(uint32_t off, uint8_t v)
++{
++	*(volatile uint8_t *)(sd.regs + off) = v;
++}
++
++static uint64_t
++now_us(void)
++{
++	uint64_t ns;
++	absolutetime_to_nanoseconds(mach_absolute_time(), &ns);
++	return ns / NSEC_PER_USEC;
++}
++
++static void
++reset_lines(uint8_t m)
++{
++	wr8(SD_SWRST, (uint8_t)(rd8(SD_SWRST) | m));
++	uint64_t t = now_us();
++	while ((rd8(SD_SWRST) & m) && now_us() - t < CMD_TIMEOUT_US) {
++	}
++}
++
++/* Wait for any of the bits in want (or an error) in INTSTS. */
++static int
++wait_int(uint32_t want, uint32_t timeout_us)
++{
++	uint64_t t = now_us();
++	for (;;) {
++		uint32_t st = rd32(SD_INTSTS);
++		if (st & INT_ERR) {
++			sd.last_err = st;
++			return EIO;
++		}
++		if (st & want) {
++			return 0;
++		}
++		if (now_us() - t > timeout_us) {
++			sd.last_err = st;
++			return ETIMEDOUT;
++		}
++	}
++}
++
++/*
++ * One command. data: 0 none, 1 read, 2 write; nblk > 1 uses the block
++ * count register and auto CMD12. Returns with the response in resp.
++ */
++static int
++sd_cmd(uint32_t idx, uint32_t arg, uint32_t rsp, int data, uint32_t nblk, uint32_t *resp)
++{
++	uint32_t f = rsp;
++	if (rsp == RSP_48 || rsp == RSP_48_BUSY) {
++		f |= CMD_IDX_CHK | CMD_CRC_CHK;
++	} else if (rsp == RSP_136) {
++		f |= CMD_CRC_CHK;
++	}
++	if (idx == 41) {                /* R3: no CRC, no index */
++		f = RSP_48;
++	}
++
++	uint32_t inhibit = PS_CMD_INHIBIT | ((data || rsp == RSP_48_BUSY) ? PS_DAT_INHIBIT : 0);
++	uint64_t t = now_us();
++	while (rd32(SD_PRESENT) & inhibit) {
++		if (now_us() - t > CMD_TIMEOUT_US) {
++			reset_lines(RST_CMD | RST_DAT);
++			return EBUSY;
++		}
++	}
++
++	wr32(SD_INTSTS, 0xFFFFFFFF);
++	wr32(SD_ARG, arg);
++	uint32_t trn = 0;
++	if (data) {
++		wr16(SD_BLKSIZE, SECTOR);
++		wr16(SD_BLKCNT, (uint16_t)nblk);
++		trn = (data == 1 ? TRN_READ : 0);
++		if (nblk > 1) {
++			trn |= TRN_MULTI | TRN_BLKCNT_EN | TRN_AUTO_CMD12;
++		}
++		f |= CMD_DATA;
++	}
++	wr32(SD_TRNMOD_CMD, trn | (idx << 8 | f) << 16);
++
++	int error = wait_int(INT_CMD_DONE, CMD_TIMEOUT_US);
++	if (error) {
++		reset_lines(RST_CMD | RST_DAT);
++		return error;
++	}
++	wr32(SD_INTSTS, INT_CMD_DONE);
++	if (resp) {
++		for (uint32_t i = 0; i < (rsp == RSP_136 ? 4u : 1u); i++) {
++			resp[i] = rd32(SD_RESP0 + 4 * i);
++		}
++	}
++	if (rsp == RSP_48_BUSY && !data) {
++		error = wait_int(INT_XFER_DONE, BUSY_TIMEOUT_US);
++		if (error) {
++			reset_lines(RST_CMD | RST_DAT);
++			return error;
++		}
++		wr32(SD_INTSTS, INT_XFER_DONE);
++	}
++	return 0;
++}
++
++/* CMD13 until the card is back in the transfer state and ready for data. */
++static int
++wait_ready(void)
++{
++	uint64_t t = now_us();
++	for (;;) {
++		uint32_t r = 0;
++		int error = sd_cmd(13, sd.rca << 16, RSP_48, 0, 0, &r);
++		if (error) {
++			return error;
++		}
++		if ((r & (1u << 8)) && ((r >> 9) & 0xF) == 4) {
++			return 0;
++		}
++		if (now_us() - t > BUSY_TIMEOUT_US) {
++			return ETIMEDOUT;
++		}
++		delay(100);
++	}
++}
++
++static void
++set_card_clock(unsigned divisor)
++{
++	uint16_t c = (uint16_t)(rd16(SD_CLKCON) & ~CLK_CARD_EN);
++	wr16(SD_CLKCON, c);
++	unsigned lo = divisor >> 1, hi = lo >> 8;
++	c = (uint16_t)((c & 0x003F) | (lo & 0xFF) << 8 | (hi & 3) << 6);
++	wr16(SD_CLKCON, c);
++	wr16(SD_CLKCON, (uint16_t)(c | CLK_CARD_EN));
++	delay(1000);
++}
++
++static void
++autocal(void)
++{
++	wr32(SD_CMPPADCTL, rd32(SD_CMPPADCTL) | PAD_E_INPUT_PWRD);
++	delay(1);
++	wr32(SD_AUTOCALCFG, rd32(SD_AUTOCALCFG) | AUTOCAL_ENABLE | AUTOCAL_START);
++	delay(2);
++	uint64_t t = now_us();
++	while (rd32(SD_AUTOCALSTS) & AUTOCAL_ACTIVE) {
++		if (now_us() - t > 10000) {
++			/* The shim already set the fallback pad drive if it timed out there. */
++			wr32(SD_AUTOCALCFG, rd32(SD_AUTOCALCFG) & ~AUTOCAL_ENABLE);
++			printf("NX SD: pad autocal timeout\n");
++			break;
++		}
++	}
++	wr32(SD_CMPPADCTL, rd32(SD_CMPPADCTL) & ~PAD_E_INPUT_PWRD);
++}
++
++static int
++host_init(void)
++{
++	wr8(SD_SWRST, RST_ALL);
++	uint64_t t = now_us();
++	while (rd8(SD_SWRST) & RST_ALL) {
++		if (now_us() - t > CMD_TIMEOUT_US) {
++			return EIO;
++		}
++	}
++	wr32(SD_IOSPARE, rd32(SD_IOSPARE) | (1u << 19));
++	wr32(SD_IOTRIMCTL, rd32(SD_IOTRIMCTL) & ~(1u << 2));
++	/* trim 2, tap 4 (T210 SDMMC1) */
++	wr32(SD_VENCLKCTL, (rd32(SD_VENCLKCTL) & 0xE000FFFB) | (2u << 24) | (4u << 16));
++	wr32(SD_CMPPADCTL, (rd32(SD_CMPPADCTL) & ~0xFu) | 7);
++	wr32(SD_AUTOCALCFG, (rd32(SD_AUTOCALCFG) & 0xFFFF8080) | (0x7Du << 8));
++	autocal();
++
++	wr16(SD_CLKCON, (uint16_t)(rd16(SD_CLKCON) | CLK_INT_EN));
++	t = now_us();
++	while (!(rd16(SD_CLKCON) & CLK_INT_STABLE)) {
++		if (now_us() - t > CMD_TIMEOUT_US) {
++			return EIO;
++		}
++	}
++	wr16(SD_HOSTCTL2, (uint16_t)(rd16(SD_HOSTCTL2) & ~(HC2_PRESET_EN | HC2_VDD_180)));
++	wr16(SD_CLKCON, (uint16_t)(rd16(SD_CLKCON) & ~CLK_PROG_MODE));
++	wr8(SD_TIMEOUT, 14);
++	wr8(SD_HOSTCTL, 0);
++	wr8(SD_PWRCON, PWR_330);
++	wr8(SD_PWRCON, PWR_330 | PWR_ON);
++	wr16(SD_NORINTEN, INT_CMD_DONE | INT_XFER_DONE | INT_BUF_WR | INT_BUF_RD);
++	wr16(SD_ERRINTEN, 0x017F);
++	wr32(SD_INTSTS, 0xFFFFFFFF);
++	set_card_clock(64);             /* 24.7 MHz / 64 = 386 kHz for identification */
++	return 0;
++}
++
++static uint32_t
++csd_field(const uint32_t *r, unsigned hi, unsigned lo)
++{
++	uint32_t v = 0;
++	for (unsigned b = hi + 1; b-- > lo;) {
++		v = v << 1 | ((r[b / 32] >> (b % 32)) & 1);
++	}
++	return v;
++}
++
++/* Card capacity in 512-byte blocks from the CSD (R2 without CRC: bits [127:8] in resp[0..3]). */
++static uint64_t
++csd_blocks(const uint32_t *r)
++{
++	/* SDHCI shifts the 136-bit response right by 8: CSD bit n is at resp bit n - 8. */
++#define CSD_BITS(hi, lo) csd_field(r, (hi) - 8, (lo) - 8)
++	uint32_t structure = CSD_BITS(127, 126);
++	if (structure == 1) {           /* CSD 2.0: C_SIZE [69:48], (C_SIZE + 1) * 512 KiB */
++		return ((uint64_t)CSD_BITS(69, 48) + 1) * 1024;
++	}
++	/* CSD 1.0 */
++	uint32_t c_size = CSD_BITS(73, 62), mult = CSD_BITS(49, 47), bl_len = CSD_BITS(83, 80);
++	return ((uint64_t)c_size + 1) << (mult + 2 + bl_len - 9);
++#undef CSD_BITS
++}
++
++static int
++card_init(void)
++{
++	uint32_t r[4];
++	int error;
++
++	if ((error = sd_cmd(0, 0, RSP_NONE, 0, 0, NULL))) {
++		return error;
++	}
++	delay(1000);
++	bool v2 = sd_cmd(8, 0x1AA, RSP_48, 0, 0, r) == 0 && (r[0] & 0xFFF) == 0x1AA;
++	uint64_t t = now_us();
++	for (;;) {
++		if ((error = sd_cmd(55, 0, RSP_48, 0, 0, r)) ||
++		    (error = sd_cmd(41, 0x00FF8000 | (v2 ? (1u << 30) : 0), RSP_48, 0, 0, r))) {
++			return error;
++		}
++		if (r[0] & (1u << 31)) {
++			break;
++		}
++		if (now_us() - t > 1000000) {
++			return ETIMEDOUT;
++		}
++		delay(10000);
++	}
++	sd.sdhc = (r[0] & (1u << 30)) != 0;
++	if ((error = sd_cmd(2, 0, RSP_136, 0, 0, r))) {
++		return error;
++	}
++	if ((error = sd_cmd(3, 0, RSP_48, 0, 0, r))) {
++		return error;
++	}
++	sd.rca = r[0] >> 16;
++	if ((error = sd_cmd(9, sd.rca << 16, RSP_136, 0, 0, r))) {
++		return error;
++	}
++	sd.card_blocks = csd_blocks(r);
++	if ((error = sd_cmd(7, sd.rca << 16, RSP_48_BUSY, 0, 0, r))) {
++		return error;
++	}
++	/* 4-bit bus: ACMD6 arg 2, then the host. */
++	if ((error = sd_cmd(55, sd.rca << 16, RSP_48, 0, 0, r)) ||
++	    (error = sd_cmd(6, 2, RSP_48, 0, 0, r))) {
++		return error;
++	}
++	wr8(SD_HOSTCTL, (uint8_t)(rd8(SD_HOSTCTL) | HC_4BIT));
++	set_card_clock(1);              /* default speed, 24.7 MHz */
++	if (!sd.sdhc && (error = sd_cmd(16, SECTOR, RSP_48, 0, 0, r))) {
++		return error;
++	}
++	return 0;
++}
++
++/* PIO transfer of n blocks at card block lba to/from buf. */
++static int
++sd_xfer(uint64_t lba, uint32_t n, uint8_t *buf, bool write)
++{
++	if (n == 0 || n > CHUNK_BLOCKS || lba + n > sd.card_blocks) {
++		return EINVAL;
++	}
++	uint32_t arg = (uint32_t)(sd.sdhc ? lba : lba * SECTOR);
++	uint32_t idx = write ? (n > 1 ? 25u : 24u) : (n > 1 ? 18u : 17u);
++	int error = sd_cmd(idx, arg, RSP_48, write ? 2 : 1, n, NULL);
++	for (uint32_t b = 0; !error && b < n; b++) {
++		error = wait_int(write ? INT_BUF_WR : INT_BUF_RD, DATA_TIMEOUT_US);
++		if (error) {
++			break;
++		}
++		wr32(SD_INTSTS, write ? INT_BUF_WR : INT_BUF_RD);
++		uint8_t *p = buf + (size_t)b * SECTOR;
++		for (uint32_t i = 0; i < SECTOR; i += 4) {
++			uint32_t w;
++			if (write) {
++				memcpy(&w, p + i, 4);
++				wr32(SD_BUFFER, w);
++			} else {
++				w = rd32(SD_BUFFER);
++				memcpy(p + i, &w, 4);
++			}
++		}
++	}
++	if (!error) {
++		error = wait_int(INT_XFER_DONE, DATA_TIMEOUT_US);
++		wr32(SD_INTSTS, INT_XFER_DONE);
++	}
++	if (error) {
++		printf("NX SD: CMD%u lba 0x%llx n %u failed %d (intsts 0x%08x)\n",
++		    idx, lba, n, error, sd.last_err);
++		reset_lines(RST_CMD | RST_DAT);
++		if (n > 1) {
++			(void)sd_cmd(12, 0, RSP_48_BUSY, 0, 0, NULL);
++		}
++		return error;
++	}
++	return write ? wait_ready() : 0;
++}
++
++static int
++find_partition(const char *want, uint8_t *b)
++{
++	int error;
++
++	if (strncmp(want, "mbr:", 4) == 0) {
++		unsigned slot = (unsigned)(want[4] - '1');
++		if (want[4] < '1' || want[4] > '4' || want[5] != 0) {
++			return EINVAL;
++		}
++		if ((error = sd_xfer(0, 1, b, false))) {
++			return error;
++		}
++		if (b[510] != 0x55 || b[511] != 0xAA) {
++			return ENOENT;
++		}
++		const uint8_t *e = b + 446 + 16 * slot;
++		uint32_t first, count;
++		memcpy(&first, e + 8, 4);
++		memcpy(&count, e + 12, 4);
++		if (e[4] == 0 || count == 0) {
++			return ENOENT;
++		}
++		sd.first_block = first;
++		sd.nblocks = count;
++		return 0;
++	}
++
++	if ((error = sd_xfer(1, 1, b, false))) {
++		return error;
++	}
++	if (memcmp(b, "EFI PART", 8) != 0) {
++		return ENOENT;
++	}
++	uint64_t entry_lba;
++	uint32_t nent, esz;
++	memcpy(&entry_lba, b + 72, 8);
++	memcpy(&nent, b + 80, 4);
++	memcpy(&esz, b + 84, 4);
++	if (esz != 128 || nent == 0 || nent > 1024) {
++		return EINVAL;
++	}
++	for (uint32_t i = 0; i < nent; i++) {
++		if (i % 4 == 0 && (error = sd_xfer(entry_lba + i / 4, 1, b, false))) {
++			return error;
++		}
++		const uint8_t *e = b + (i % 4) * 128;
++		char name[37];
++		unsigned c;
++		for (c = 0; c < 36; c++) {
++			uint16_t ch = (uint16_t)(e[56 + 2 * c] | e[57 + 2 * c] << 8);
++			if (ch == 0 || ch > 0x7f) {
++				break;
++			}
++			name[c] = (char)ch;
++		}
++		name[c] = 0;
++		uint64_t first, last;
++		memcpy(&first, e + 32, 8);
++		memcpy(&last, e + 40, 8);
++		if (strcmp(name, want) == 0 && last >= first) {
++			sd.first_block = first;
++			sd.nblocks = last - first + 1;
++			return 0;
++		}
++	}
++	return ENOENT;
++}
++
++static int
++nx_sdmmc_open(__unused dev_t dev, int flags, __unused int devtype, __unused struct proc *p)
++{
++	if (!sd.ready) {
++		return ENXIO;
++	}
++	return ((flags & FWRITE) && !sd.writable) ? EROFS : 0;
++}
++
++static int
++nx_sdmmc_close(__unused dev_t dev, __unused int flags, __unused int devtype, __unused struct proc *p)
++{
++	return 0;
++}
++
++static void
++nx_sdmmc_strategy(buf_t bp)
++{
++	int error = 0;
++	caddr_t vaddr = NULL;
++	uint64_t blk = (uint64_t)buf_blkno(bp);
++	uint32_t count = buf_count(bp);
++	bool rd = buf_flags(bp) & B_READ;
++
++	buf_setresid(bp, count);
++	if (!rd && !sd.writable) {
++		error = EROFS;
++		goto done;
++	}
++	if ((count % SECTOR) || blk > sd.nblocks || count / SECTOR > sd.nblocks - blk) {
++		error = EINVAL;
++		goto done;
++	}
++	if (count == 0) {
++		goto done;
++	}
++	if (buf_map(bp, &vaddr)) {
++		error = EIO;
++		goto done;
++	}
++	lck_mtx_lock(&nx_sdmmc_lock);
++	for (uint32_t done = 0; done < count;) {
++		uint32_t n = MIN((count - done) / SECTOR, CHUNK_BLOCKS);
++		uint64_t lba = blk + done / SECTOR;
++		/* Bounds again, right before the command (writes go nowhere else). */
++		if (lba + n > sd.nblocks) {
++			error = EINVAL;
++			break;
++		}
++		error = sd_xfer(sd.first_block + lba, n, (uint8_t *)vaddr + done, !rd);
++		if (error) {
++			break;
++		}
++		done += n * SECTOR;
++		buf_setresid(bp, count - done);
++	}
++	lck_mtx_unlock(&nx_sdmmc_lock);
++	buf_unmap(bp);
++done:
++	if (error) {
++		buf_seterror(bp, error);
++	}
++	buf_biodone(bp);
++}
++
++static int
++nx_sdmmc_ioctl(__unused dev_t dev, u_long cmd, caddr_t data, __unused int flag,
++    __unused struct proc *p, __unused int is_char)
++{
++	uint32_t *f = (uint32_t *)data;
++	uint64_t *o = (uint64_t *)data;
++
++	switch (cmd) {
++	case DKIOCGETBLOCKSIZE:
++	case DKIOCGETPHYSICALBLOCKSIZE:
++		*f = SECTOR;
++		return 0;
++	case DKIOCSETBLOCKSIZE:
++		return *f == SECTOR ? 0 : EINVAL;
++	case DKIOCGETBLOCKCOUNT:
++		*o = sd.nblocks;
++		return 0;
++	case DKIOCISWRITABLE:
++		*f = sd.writable;
++		return 0;
++	case DKIOCSYNCHRONIZE:
++	case DKIOCSYNCHRONIZECACHE:
++		return 0;               /* every write waits for the card (CMD13) */
++	case DKIOCGETMAXBLOCKCOUNTREAD:
++		*o = CHUNK_BLOCKS;
++		return 0;
++	case DKIOCGETMAXBLOCKCOUNTWRITE:
++		*o = sd.writable ? CHUNK_BLOCKS : 0;
++		return 0;
++	case DKIOCGETMAXSEGMENTCOUNTREAD:
++	case DKIOCGETMAXSEGMENTCOUNTWRITE:
++		*o = 1;
++		return 0;
++	default:
++		return ENOTTY;
++	}
++}
++
++static int
++nx_sdmmc_bioctl(dev_t dev, u_long cmd, caddr_t data, int flag, struct proc *p)
++{
++	return nx_sdmmc_ioctl(dev, cmd, data, flag, p, 0);
++}
++
++static int
++nx_sdmmc_cioctl(dev_t dev, u_long cmd, caddr_t data, int flag, struct proc *p)
++{
++	return nx_sdmmc_ioctl(dev, cmd, data, flag, p, 1);
++}
++
++static int
++nx_sdmmc_psize(__unused dev_t dev)
++{
++	return sd.ready ? (int)MIN(sd.nblocks, (uint64_t)INT_MAX) : -1;
++}
++
++static int
++nx_sdmmc_read(dev_t dev, struct uio *uio, __unused int ioflag)
++{
++	return physio(nx_sdmmc_strategy, NULL, dev, B_READ, minphys, uio, (int)SECTOR);
++}
++
++static int
++nx_sdmmc_write(dev_t dev, struct uio *uio, __unused int ioflag)
++{
++	if (!sd.writable) {
++		return EROFS;
++	}
++	return physio(nx_sdmmc_strategy, NULL, dev, B_WRITE, minphys, uio, (int)SECTOR);
++}
++
++static const struct bdevsw nx_sdmmc_bdevsw = {
++	.d_open     = nx_sdmmc_open,
++	.d_close    = nx_sdmmc_close,
++	.d_strategy = nx_sdmmc_strategy,
++	.d_ioctl    = nx_sdmmc_bioctl,
++	.d_dump     = eno_dump,
++	.d_psize    = nx_sdmmc_psize,
++	.d_type     = D_DISK,
++};
++
++static const struct cdevsw nx_sdmmc_cdevsw = {
++	.d_open       = nx_sdmmc_open,
++	.d_close      = nx_sdmmc_close,
++	.d_read       = nx_sdmmc_read,
++	.d_write      = nx_sdmmc_write,
++	.d_ioctl      = nx_sdmmc_cioctl,
++	.d_stop       = eno_stop,
++	.d_reset      = eno_reset,
++	.d_ttys       = NULL,
++	.d_select     = eno_select,
++	.d_mmap       = eno_mmap,
++	.d_strategy   = eno_strat,
++	.d_reserved_1 = eno_getc,
++	.d_reserved_2 = eno_putc,
++	.d_type       = D_DISK,
++};
++
++static int
++nx_sdmmc_init(void)
++{
++	DTEntry node;
++	uintptr_t const *reg = NULL;
++	unsigned int size = 0;
++	char want[40] = "ios";
++	uint32_t rw = 0;
++	int error;
++
++	if (SecureDTLookupEntry(NULL, "/nx-sdmmc", &node) != kSuccess ||
++	    SecureDTGetProperty(node, "reg", (void const **)&reg, &size) != kSuccess ||
++	    size < 2 * sizeof(uintptr_t)) {
++		printf("NX SD: no /nx-sdmmc node in the device tree\n");
++		return ENXIO;
++	}
++	PE_parse_boot_argn("sdroot", want, sizeof(want));
++	PE_parse_boot_argn("sdrw", &rw, sizeof(rw));
++	sd.regs = ml_io_map(reg[0], reg[1]);
++
++	uint8_t *b = (uint8_t *)kalloc_data(SECTOR, Z_WAITOK | Z_ZERO);
++	if (b == NULL) {
++		return ENOMEM;
++	}
++	lck_mtx_lock(&nx_sdmmc_lock);
++	error = host_init();
++	if (!error) {
++		error = card_init();
++	}
++	if (!error) {
++		printf("NX SD: %s card, %llu MiB, RCA 0x%x\n", sd.sdhc ? "SDHC/SDXC" : "SDSC",
++		    sd.card_blocks >> 11, sd.rca);
++		error = find_partition(want, b);
++	}
++	lck_mtx_unlock(&nx_sdmmc_lock);
++	kfree_data(b, SECTOR);
++	if (error) {
++		printf("NX SD: partition \"%s\": error %d (intsts 0x%08x)\n", want, error, sd.last_err);
++		return error;
++	}
++	if (sd.first_block + sd.nblocks > sd.card_blocks) {
++		printf("NX SD: partition \"%s\" runs past the end of the card\n", want);
++		return EINVAL;
++	}
++
++	sd.bmajor = bdevsw_add(-1, &nx_sdmmc_bdevsw);
++	if (sd.bmajor < 0) {
++		return ENXIO;
++	}
++	sd.cmajor = cdevsw_add_with_bdev(-1, &nx_sdmmc_cdevsw, sd.bmajor);
++	if (sd.cmajor < 0) {
++		return ENXIO;
++	}
++	sd.bdev = makedev(sd.bmajor, 0);
++	devfs_make_node(sd.bdev, DEVFS_BLOCK, UID_ROOT, GID_OPERATOR, 0640, "sdroot0");
++	devfs_make_node(makedev(sd.cmajor, 0), DEVFS_CHAR, UID_ROOT, GID_OPERATOR, 0640, "rsdroot0");
++	sd.writable = (rw != 0);
++	sd.ready = true;
++	printf("NX SD: \"%s\": first block 0x%llx, %llu MiB, %s\n", want, sd.first_block,
++	    sd.nblocks >> 11, sd.writable ? "read-write" : "read-only");
++	return 0;
++}
++
++/* Root device for rd=sdroot0 (IOFindBSDRoot). */
++int
++nx_sdmmc_rootdev(dev_t *dev)
++{
++	if (!sd.ready) {
++		int error = nx_sdmmc_init();
++		if (error) {
++			return error;
++		}
++	}
++	*dev = sd.bdev;
++	return 0;
++}
++
++#else /* !NX_SWITCH */
++
++int
++nx_sdmmc_rootdev(__unused dev_t *dev)
++{
++	return ENXIO;
++}
++
++#endif /* NX_SWITCH */
+diff --git a/iokit/bsddev/IOKitBSDInit.cpp b/iokit/bsddev/IOKitBSDInit.cpp
+index e6c74aa..579da6f 100644
+--- a/iokit/bsddev/IOKitBSDInit.cpp
++++ b/iokit/bsddev/IOKitBSDInit.cpp
+@@ -782,6 +782,21 @@ IOFindBSDRoot( char * rootName, unsigned int rootNameSize,
+ 		*oflags = 0;
+ 		goto iofrootx;
+ 	}
++//
++//	NX (Nintendo Switch): root on a partition of the SD card (bsd/dev/nx_sdmmc.c)
++//
++	if (strcmp(rdBootVar, "sdroot0") == 0) {
++		extern int nx_sdmmc_rootdev(dev_t *dev);
++		OSSafeReleaseNULL(matching);
++		int sd_error = nx_sdmmc_rootdev(root);
++		if (sd_error) {
++			panic("IOFindBSDRoot: NX SD root %s unavailable: %d", rdBootVar, sd_error);
++		}
++		strlcpy(rootName, rdBootVar, rootNameSize);
++		IOLog("BSD root: %s, major %d, minor %d\n", rootName, major(*root), minor(*root));
++		*oflags = 0;
++		goto iofrootx;
++	}
+ #endif
+ 
+ //
+-- 
+2.55.0
+

@@ -329,9 +329,9 @@ HEAD), and so what the NX patches have to deal with:
 
 ## XNU NX patches (2026-11-05, not built yet)
 
-`xnu/patches/0200-0204-nx-*.patch`, made on branch `nx` of
+`xnu/patches/0200-0205-nx-*.patch`, made on branch `nx` of
 `work/xnu-src/xnu` (`master` = pristine + topaz series, unchanged).
-Checked: all five apply in order with `git apply --check` on a `master`
+Checked: all six apply in order with `git apply --check` on a `master`
 worktree, and the result is identical to `nx`. **Not compiled**: XNU only
 builds on macOS (CI or `tools/build-local.sh`). The GICv2 C block was
 compiled on its own with stubs (`clang -Weverything`, no warnings).
@@ -381,6 +381,32 @@ cortex-a53 (ARMv8.0, fine on the A57).
   log only start via `rd=ufsroot0`; topaz modem/audio/adreno, redwood
   wlan/gpu only from AppleCLCD; SweetHIDButtons/Touch don't touch MMIO.
   `sweet_amfi`, HFS, mockfs, AMFI policy are software.
+
+- **0205 SD root** (`bsd/dev/nx_sdmmc.c`, + `bsd/conf/files`, +
+  IOKitBSDInit `rd=sdroot0` -> `nx_sdmmc_rootdev()`, which panics if
+  unavailable like the UFS path). Division of work: **shim-nx powers
+  SDMMC1** (pads, LDO2, PMC, CAR clocks: `test_sd()` in main.c, which must
+  stay before the loader). **XNU** does SWRST_ALL, re-applies the Tegra
+  trims (trim 2, tap 4, VREF 7, autocal offsets 0x7D/0 + autocal),
+  identifies the card (CMD0/8/ACMD41/2/3/9/7), switches to a **4-bit bus
+  (ACMD6) at 24.7 MHz**, CMD16 for SDSC. Polled PIO only: CMD17/18 and
+  CMD24/25 with block count + auto CMD12, up to 2048 blocks (1 MiB) per
+  command; after every write CMD13 until the card is in TRAN state and
+  ready. Partition: boot-arg `sdroot=NAME` (GPT name, default `ios`) or
+  `sdroot=mbr:N` (MBR slot 1-4). Bounds checked in strategy and again
+  per command. Writes only with `sdrw=1`. Devices `/dev/sdroot0`,
+  `/dev/rsdroot0`, 512-byte sectors. Capacity from CSD v1/v2
+  (host-tested: SDHC C_SIZE 60871 -> 62332928 blocks; SDSC 2 GB
+  case right). For non-NX builds the file only has an ENXIO stub (avoids
+  an empty translation unit under -Weverything). Syntax-checked with
+  stub headers (`clang -Weverything`); the remaining warnings were stub
+  artifacts (uint64_t is unsigned long there, the lock group macro).
+  Not done yet: the persistent log ring at the end of the partition
+  (sweet_ufs has one), and high-speed mode (CMD6, 50 MHz).
+- SD layout plan (needs the user's OK before anything is written to the
+  card): keep hekate's FAT32 partition, add a GPT partition named `ios`
+  with an HFS+ root image dd'd into it, boot with `rd=sdroot0`.
+  Until then: RAM disk root (`rd=md0`).
 
 First NX kernel boot (once CI has built one):
 `tools/mkadt-nx.py nx.adt` ->
@@ -457,11 +483,9 @@ cpus=4 to test PSCI + the EL2 drop + SGIs.
    secondary EL2, Qualcomm gating; see "XNU NX patches"). Next: get a
    CI build (needs the user's OK to push), fix compile errors. Still
    open:
-   - SD block device modelled on `bsd/dev/sweet_ufs.c` (bdevsw/cdevsw,
-     `rd=` root name, `/nx-sdmmc` from the ADT, persistent log ring at the
-     end of the partition, readable by putting the SD card in a PC).
-     Reuse the register sequence from `shim-nx/sdmmc.c` once it's proven
-     on hardware.
+   - ~~SD block device~~ done (0205). Still to add: the persistent log
+     ring at the end of the partition (readable by putting the SD card in
+     a PC), high-speed mode.
    - A Tegra DC framebuffer driver for AppleCLCD (IOMobileFramebuffer for
      backboardd), replacing the NX early return in patch 0204.
    - SweetHID.cpp still assumes 1080x2400 (only matters once there is

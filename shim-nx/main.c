@@ -306,6 +306,12 @@ void shim_main(uint64_t entry_el, uint64_t entry_x0)
 
 	test_gic();
 	poll_rcm();
+	/*
+	 * Not only a test: XNU's SD root driver (xnu patch 0205, bsd/dev/
+	 * nx_sdmmc.c) relies on this having powered SDMMC1 (pads, LDO2, PMC IO
+	 * power, CAR clocks), since hekate turned the card off. It then resets
+	 * the SDHCI and identifies the card itself. Keep it before the loader.
+	 */
 	test_sd();
 	poll_rcm();
 

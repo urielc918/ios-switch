@@ -487,7 +487,12 @@ cpus=4 to test PSCI + the EL2 drop + SGIs.
   Power held ~1 s, then VOL+ and VOL- together. If still black, hekate
   dies earlier: `hw_init()` (clocks, PMIC, SDRAM) runs before the battery
   check in `ipl_main`.
-- User suspects a **faulty charger**. Until the Switch can show
+- User suspects a **faulty charger**.
+- **13:47:11 hekate 6.5.4 shows its screen** (after ~30 min on the
+  Switch's own power supply, same PC port 1-1, SD card out). So the earlier
+  black screens were the low battery, not the payload or USB. Before an
+  RCM session, charge the Switch first; if hekate is black, hold VOL+ and
+  VOL- together. Until the Switch can show
   hekate's screen, nothing else can be tested on hardware. Next try: a
   known-good charger and cable, the PC's rear port `usb 1-1`, then
   re-send (the watcher one-liner in this session's history sends the

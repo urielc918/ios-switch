@@ -329,9 +329,9 @@ HEAD), and so what the NX patches have to deal with:
 
 ## XNU NX patches (2026-11-05, not built yet)
 
-`xnu/patches/0200-0206-nx-*.patch`, made on branch `nx` of
+`xnu/patches/0200-0207-nx-*.patch`, made on branch `nx` of
 `work/xnu-src/xnu` (`master` = pristine + topaz series, unchanged).
-Checked: all seven apply in order with `git apply --check` on a `master`
+Checked: all eight apply in order with `git apply --check` on a `master`
 worktree, and the result is identical to `nx`. **Not compiled**: XNU only
 builds on macOS (CI or `tools/build-local.sh`). The GICv2 C block was
 compiled on its own with stubs (`clang -Weverything`, no warnings).
@@ -403,11 +403,25 @@ cortex-a53 (ARMv8.0, fine on the A57).
   an empty translation unit under -Weverything). Syntax-checked with
   stub headers (`clang -Weverything`); the remaining warnings were stub
   artifacts (uint64_t is unsigned long there, the lock group macro).
-  Not done yet: the persistent log ring at the end of the partition
-  (sweet_ufs has one), and high-speed mode (CMD6, 50 MHz).
+  Not done yet: high-speed mode (CMD6, 50 MHz).
+- **0207 SD console log** (boot-arg `sdlog=1`, `sdlogpart=` default
+  `ioslog`, `sdlogsecs=` default 2): a thread copies the console ring
+  every SWEET kernel keeps (`sweet_log_copy`/`sweet_log_position` in
+  sweet_ufs.c, fed by `_cnputs`) into a 4 MiB shadow with the on-card
+  layout and writes only the changed sectors, then the header sector.
+  Format = topaz's SWEETLOG (header at 0, ring at +4096), so
+  `tools/sweet-log.py` reads a `dd` of the partition unchanged. **Its own
+  partition, unlike topaz** (which used the tail of the root partition):
+  on an SD card the HFS image may fill the root partition, and its last
+  sectors hold the alternate volume header. Needs >= 4 MiB + 4 KiB. Started
+  from IOFindBSDRoot, so it also works with rd=md0. The card bring-up
+  (`card_up`) is shared with the root device and runs once. Independent
+  of `sdrw`: it only ever writes inside that partition (bounds checked
+  per command). `tools/nx-sdcard.sh --log` adds `sdlog=1`.
 - SD layout plan (needs the user's OK before anything is written to the
   card): keep hekate's FAT32 partition, add a GPT partition named `ios`
-  with an HFS+ root image dd'd into it, boot with `rd=sdroot0`.
+  with an HFS+ root image dd'd into it, boot with `rd=sdroot0`, plus a
+  small (e.g. 8 MiB) GPT partition `ioslog` for the console log.
   Until then: RAM disk root (`rd=md0`).
 
 `tools/nx-sdcard.sh OUTDIR KERNEL [--ramdisk ROOT.img] [--bl31 F]
@@ -493,9 +507,8 @@ cpus=4 to test PSCI + the EL2 drop + SGIs.
    secondary EL2, Qualcomm gating; see "XNU NX patches"). Next: get a
    CI build (needs the user's OK to push), fix compile errors. Still
    open:
-   - ~~SD block device~~ done (0205). Still to add: the persistent log
-     ring at the end of the partition (readable by putting the SD card in
-     a PC), high-speed mode.
+   - ~~SD block device~~ done (0205), ~~SD console log~~ done (0207).
+     Still to add: high-speed mode.
    - A Tegra DC framebuffer driver for AppleCLCD (IOMobileFramebuffer for
      backboardd), replacing the NX early return in patch 0204.
    - SweetHID.cpp still assumes 1080x2400 (only matters once there is

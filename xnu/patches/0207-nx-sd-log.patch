@@ -1,0 +1,380 @@
+From 92fc1c775479c9779bc609d2970a20fa670b23a9 Mon Sep 17 00:00:00 2001
+From: x <x@x>
+Date: Thu, 5 Nov 2026 13:38:33 -0800
+Subject: [PATCH] nx-0207: persistent console log on SD partition ioslog
+ (sdlog=1, SWEETLOG format)
+
+---
+ bsd/dev/nx_sdmmc.c            | 244 ++++++++++++++++++++++++++++++----
+ iokit/bsddev/IOKitBSDInit.cpp |   7 +-
+ 2 files changed, 226 insertions(+), 25 deletions(-)
+
+diff --git a/bsd/dev/nx_sdmmc.c b/bsd/dev/nx_sdmmc.c
+index 30c4ba2..e47c1e5 100644
+--- a/bsd/dev/nx_sdmmc.c
++++ b/bsd/dev/nx_sdmmc.c
+@@ -14,12 +14,20 @@
+  *
+  * Writes are refused unless boot-arg sdrw=1. Every write is checked
+  * against the partition bounds again right before it is issued.
++ *
++ * Persistent console log (boot-arg sdlog=1): every few seconds the console
++ * ring of bsd/dev/sweet_ufs.c (all kernel printf and /dev/console output)
++ * is written to a GPT partition of its own, named "ioslog" (sdlogpart=), in
++ * the SWEETLOG format of tools/sweet-log.py: a header at offset 0, the 4 MiB
++ * ring at offset 4096. Read it on a PC with dd of that partition. It never
++ * writes outside that partition, and works with any root (also rd=md0).
+  */
+ #include <sys/param.h>
+ #include <sys/types.h>
+ #include <sys/errno.h>
+ 
+ int nx_sdmmc_rootdev(dev_t *dev);
++void nx_sdmmc_log_start(void);
+ 
+ #if defined(NX_SWITCH)
+ #include <sys/systm.h>
+@@ -32,6 +40,7 @@ int nx_sdmmc_rootdev(dev_t *dev);
+ #include <kern/locks.h>
+ #include <kern/clock.h>
+ #include <kern/kalloc.h>
++#include <kern/sched_prim.h>
+ #include <machine/machine_routines.h>
+ #include <pexpert/pexpert.h>
+ #include <pexpert/device_tree.h>
+@@ -39,6 +48,12 @@ int nx_sdmmc_rootdev(dev_t *dev);
+ 
+ /* osfmk/arm/machine_routines.h, not exported to the BSD layer */
+ extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
++extern kern_return_t kernel_thread_start(thread_continue_t, void *, thread_t *);
++extern void thread_deallocate(thread_t);
++extern int hz;
++/* bsd/dev/sweet_ufs.c: the console ring every SWEET kernel keeps */
++extern uint32_t sweet_log_copy(uint64_t *pos, char *out, uint32_t max);
++extern uint64_t sweet_log_position(void);
+ 
+ /* SDHCI standard registers */
+ #define SD_BLKSIZE      0x04    /* 16 */
+@@ -113,6 +128,8 @@ static struct {
+ 	uint64_t card_blocks;           /* whole card, 512-byte blocks */
+ 	uint64_t first_block, nblocks;  /* partition */
+ 	bool writable;                  /* boot-arg sdrw=1 */
++	bool card_ok;                   /* host and card initialized */
++	int card_error;                 /* result of the one bring-up attempt */
+ 	int bmajor, cmajor;
+ 	dev_t bdev;
+ 	bool ready;
+@@ -472,7 +489,7 @@ sd_xfer(uint64_t lba, uint32_t n, uint8_t *buf, bool write)
+ }
+ 
+ static int
+-find_partition(const char *want, uint8_t *b)
++find_partition(const char *want, uint8_t *b, uint64_t *out_first, uint64_t *out_count)
+ {
+ 	int error;
+ 
+@@ -494,8 +511,8 @@ find_partition(const char *want, uint8_t *b)
+ 		if (e[4] == 0 || count == 0) {
+ 			return ENOENT;
+ 		}
+-		sd.first_block = first;
+-		sd.nblocks = count;
++		*out_first = first;
++		*out_count = count;
+ 		return 0;
+ 	}
+ 
+@@ -532,8 +549,8 @@ find_partition(const char *want, uint8_t *b)
+ 		memcpy(&first, e + 32, 8);
+ 		memcpy(&last, e + 40, 8);
+ 		if (strcmp(name, want) == 0 && last >= first) {
+-			sd.first_block = first;
+-			sd.nblocks = last - first + 1;
++			*out_first = first;
++			*out_count = last - first + 1;
+ 			return 0;
+ 		}
+ 	}
+@@ -703,50 +720,81 @@ static const struct cdevsw nx_sdmmc_cdevsw = {
+ 	.d_type       = D_DISK,
+ };
+ 
++/* Map the host and identify the card, once. Called with the lock held. */
+ static int
+-nx_sdmmc_init(void)
++card_up(void)
+ {
++	static bool tried;
+ 	DTEntry node;
+ 	uintptr_t const *reg = NULL;
+ 	unsigned int size = 0;
+-	char want[40] = "ios";
+-	uint32_t rw = 0;
+-	int error;
+ 
++	if (tried) {
++		return sd.card_error;
++	}
++	tried = true;
+ 	if (SecureDTLookupEntry(NULL, "/nx-sdmmc", &node) != kSuccess ||
+ 	    SecureDTGetProperty(node, "reg", (void const **)&reg, &size) != kSuccess ||
+ 	    size < 2 * sizeof(uintptr_t)) {
+ 		printf("NX SD: no /nx-sdmmc node in the device tree\n");
++		sd.card_error = ENXIO;
+ 		return ENXIO;
+ 	}
+-	PE_parse_boot_argn("sdroot", want, sizeof(want));
+-	PE_parse_boot_argn("sdrw", &rw, sizeof(rw));
+ 	sd.regs = ml_io_map(reg[0], reg[1]);
++	int error = host_init();
++	if (!error) {
++		error = card_init();
++	}
++	if (error) {
++		printf("NX SD: card init failed: %d (intsts 0x%08x)\n", error, sd.last_err);
++	} else {
++		sd.card_ok = true;
++		printf("NX SD: %s card, %llu MiB, RCA 0x%x\n", sd.sdhc ? "SDHC/SDXC" : "SDSC",
++		    sd.card_blocks >> 11, sd.rca);
++	}
++	sd.card_error = error;
++	return error;
++}
+ 
++/* Find a partition by name (or mbr:N) and check it lies on the card. Lock held. */
++static int
++lookup(const char *want, uint64_t *first, uint64_t *count)
++{
+ 	uint8_t *b = (uint8_t *)kalloc_data(SECTOR, Z_WAITOK | Z_ZERO);
+ 	if (b == NULL) {
+ 		return ENOMEM;
+ 	}
+-	lck_mtx_lock(&nx_sdmmc_lock);
+-	error = host_init();
+-	if (!error) {
+-		error = card_init();
+-	}
++	int error = card_up();
+ 	if (!error) {
+-		printf("NX SD: %s card, %llu MiB, RCA 0x%x\n", sd.sdhc ? "SDHC/SDXC" : "SDSC",
+-		    sd.card_blocks >> 11, sd.rca);
+-		error = find_partition(want, b);
++		error = find_partition(want, b, first, count);
+ 	}
+-	lck_mtx_unlock(&nx_sdmmc_lock);
+ 	kfree_data(b, SECTOR);
++	if (!error && (*count == 0 || *first + *count > sd.card_blocks)) {
++		error = EINVAL;
++	}
+ 	if (error) {
+ 		printf("NX SD: partition \"%s\": error %d (intsts 0x%08x)\n", want, error, sd.last_err);
+-		return error;
+ 	}
+-	if (sd.first_block + sd.nblocks > sd.card_blocks) {
+-		printf("NX SD: partition \"%s\" runs past the end of the card\n", want);
+-		return EINVAL;
++	return error;
++}
++
++static int
++nx_sdmmc_init(void)
++{
++	char want[40] = "ios";
++	uint32_t rw = 0;
++	uint64_t first = 0, count = 0;
++
++	PE_parse_boot_argn("sdroot", want, sizeof(want));
++	PE_parse_boot_argn("sdrw", &rw, sizeof(rw));
++	lck_mtx_lock(&nx_sdmmc_lock);
++	int error = lookup(want, &first, &count);
++	lck_mtx_unlock(&nx_sdmmc_lock);
++	if (error) {
++		return error;
+ 	}
++	sd.first_block = first;
++	sd.nblocks = count;
+ 
+ 	sd.bmajor = bdevsw_add(-1, &nx_sdmmc_bdevsw);
+ 	if (sd.bmajor < 0) {
+@@ -766,6 +814,149 @@ nx_sdmmc_init(void)
+ 	return 0;
+ }
+ 
++/*
++ * Persistent console log on the "ioslog" partition (see the top of this
++ * file). A shadow of the ring is kept in memory with the same layout as on
++ * the card, so only the sectors that changed are written.
++ */
++#define LOG_RING        (4u << 20)              /* = SWEET_LOG_SIZE in sweet_ufs.c */
++#define LOG_HDR_SECTORS (4096u / SECTOR)        /* ring starts at +4096 (sweet-log.py) */
++
++static struct {
++	uint64_t first, count;                  /* partition, in sectors */
++	uint8_t *shadow;                        /* LOG_RING bytes */
++	uint8_t *hdr;                           /* one sector */
++	uint32_t secs;
++	int chan;
++} lg;
++
++struct nx_log_header {
++	char magic[8];
++	uint32_t version, size;
++	uint64_t total, seq;
++};
++
++/* Write ring bytes [a, b) (ring offsets, a < b) to the card. Lock held. */
++static int
++log_write_range(uint32_t a, uint32_t b)
++{
++	uint32_t s0 = a / SECTOR, s1 = (b + SECTOR - 1) / SECTOR;
++	while (s0 < s1) {
++		uint32_t n = MIN(s1 - s0, CHUNK_BLOCKS);
++		uint64_t lba = LOG_HDR_SECTORS + s0;
++		if (lba + n > lg.count) {               /* never outside the partition */
++			return EINVAL;
++		}
++		int error = sd_xfer(lg.first + lba, n, lg.shadow + (size_t)s0 * SECTOR, true);
++		if (error) {
++			return error;
++		}
++		s0 += n;
++	}
++	return 0;
++}
++
++static void
++nx_sdmmc_log_thread(__unused void *arg, __unused wait_result_t wr)
++{
++	uint64_t flushed = 0, seq = 0;
++	char *tmp = (char *)kalloc_data(16384, Z_WAITOK);
++	if (tmp == NULL) {
++		return;
++	}
++	printf("NX SD LOG: console log to partition at block 0x%llx, every %u s\n", lg.first, lg.secs);
++	for (;;) {
++		uint64_t total = sweet_log_position();
++		if (total != flushed) {
++			uint64_t pos = flushed, start = ~0ull;
++			uint32_t n;
++			while ((n = sweet_log_copy(&pos, tmp, 16384)) > 0) {
++				uint64_t at = pos - n;          /* sweet_log_copy may skip ahead */
++				if (start == ~0ull) {
++					start = at;
++				}
++				for (uint32_t i = 0; i < n; i++) {
++					lg.shadow[(at + i) % LOG_RING] = (uint8_t)tmp[i];
++				}
++			}
++			int error = 0;
++			lck_mtx_lock(&nx_sdmmc_lock);
++			if (start != ~0ull) {
++				if (pos - start >= LOG_RING) {
++					error = log_write_range(0, LOG_RING);
++				} else {
++					uint32_t a = (uint32_t)(start % LOG_RING), b = (uint32_t)(pos % LOG_RING);
++					if (a < b) {
++						error = log_write_range(a, b);
++					} else {
++						error = log_write_range(a, LOG_RING);
++						if (!error && b) {
++							error = log_write_range(0, b);
++						}
++					}
++				}
++			}
++			if (!error) {
++				struct nx_log_header h = {
++					.magic = { 'S', 'W', 'E', 'E', 'T', 'L', 'O', 'G' },
++					.version = 1, .size = LOG_RING, .total = pos, .seq = ++seq,
++				};
++				bzero(lg.hdr, SECTOR);
++				memcpy(lg.hdr, &h, sizeof(h));
++				error = sd_xfer(lg.first, 1, lg.hdr, true);
++			}
++			lck_mtx_unlock(&nx_sdmmc_lock);
++			if (error) {
++				printf("NX SD LOG: write failed (%d), stopping\n", error);
++				kfree_data(tmp, 16384);
++				return;
++			}
++			flushed = pos;
++		}
++		(void)tsleep(&lg.chan, PZERO, "nxsdlog", hz * (int)lg.secs);
++	}
++}
++
++/* Boot-arg sdlog=1: start the log writer (IOFindBSDRoot calls this once). */
++void
++nx_sdmmc_log_start(void)
++{
++	static bool started;
++	uint32_t on = 0;
++	char want[40] = "ioslog";
++	thread_t thread;
++
++	if (started || !PE_parse_boot_argn("sdlog", &on, sizeof(on)) || on != 1) {
++		return;
++	}
++	started = true;
++	PE_parse_boot_argn("sdlogpart", want, sizeof(want));
++	lg.secs = 2;
++	PE_parse_boot_argn("sdlogsecs", &lg.secs, sizeof(lg.secs));
++	if (lg.secs == 0 || lg.secs > 60) {
++		lg.secs = 2;
++	}
++	lck_mtx_lock(&nx_sdmmc_lock);
++	int error = lookup(want, &lg.first, &lg.count);
++	lck_mtx_unlock(&nx_sdmmc_lock);
++	if (error) {
++		return;
++	}
++	if (lg.count < LOG_HDR_SECTORS + LOG_RING / SECTOR) {
++		printf("NX SD LOG: partition \"%s\" too small (%llu sectors)\n", want, lg.count);
++		return;
++	}
++	lg.shadow = (uint8_t *)kalloc_data(LOG_RING, Z_WAITOK | Z_ZERO);
++	lg.hdr = (uint8_t *)kalloc_data(SECTOR, Z_WAITOK | Z_ZERO);
++	if (lg.shadow == NULL || lg.hdr == NULL) {
++		printf("NX SD LOG: no memory\n");
++		return;
++	}
++	if (kernel_thread_start(nx_sdmmc_log_thread, NULL, &thread) == KERN_SUCCESS) {
++		thread_deallocate(thread);
++	}
++}
++
+ /* Root device for rd=sdroot0 (IOFindBSDRoot). */
+ int
+ nx_sdmmc_rootdev(dev_t *dev)
+@@ -788,4 +979,9 @@ nx_sdmmc_rootdev(__unused dev_t *dev)
+ 	return ENXIO;
+ }
+ 
++void
++nx_sdmmc_log_start(void)
++{
++}
++
+ #endif /* NX_SWITCH */
+diff --git a/iokit/bsddev/IOKitBSDInit.cpp b/iokit/bsddev/IOKitBSDInit.cpp
+index 579da6f..9e9e35c 100644
+--- a/iokit/bsddev/IOKitBSDInit.cpp
++++ b/iokit/bsddev/IOKitBSDInit.cpp
+@@ -783,8 +783,13 @@ IOFindBSDRoot( char * rootName, unsigned int rootNameSize,
+ 		goto iofrootx;
+ 	}
+ //
+-//	NX (Nintendo Switch): root on a partition of the SD card (bsd/dev/nx_sdmmc.c)
++//	NX (Nintendo Switch): persistent console log on the SD card (sdlog=1) and
++//	root on a partition of it (bsd/dev/nx_sdmmc.c)
+ //
++	{
++		extern void nx_sdmmc_log_start(void);
++		nx_sdmmc_log_start();
++	}
+ 	if (strcmp(rdBootVar, "sdroot0") == 0) {
+ 		extern int nx_sdmmc_rootdev(dev_t *dev);
+ 		OSSafeReleaseNULL(matching);
+-- 
+2.55.0
+

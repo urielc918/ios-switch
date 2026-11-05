@@ -470,6 +470,10 @@ cpus=4 to test PSCI + the EL2 drop + SGIs.
   `IOUserServerUEXTTrap`), as upstream does. Workflow `runs-on: macos-15`
   (it already selects the oldest installed Xcode). Private repo: macOS
   minutes count 10x.
+- The CI ccache wrapper now bypasses ccache for `.s` inputs (as
+  `tools/build-local.sh` already did): assembler files include the
+  generated `assym.s`, which ccache doesn't hash, so stale struct offsets
+  could survive a layout change (TOPAZ_4K/NX).
 
 ## Hardware log (2026-11-05)
 

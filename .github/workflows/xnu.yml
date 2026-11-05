@@ -86,8 +86,11 @@ jobs:
           xcodebuild -version
           xcrun --find iig
           mkdir -p "$CCACHE_WRAP"
+          # Assembly (.s) includes the generated assym.s, which ccache does not hash
+          # for assembler input: a cached object can keep stale structure offsets
+          # (TOPAZ_4K/NX change them). No cache for .s, as in tools/build-local.sh.
           for t in clang clang++; do
-            printf '#!/bin/sh\nexec ccache %s "$@"\n' "$(xcrun -find $t)" > "$CCACHE_WRAP/$t"
+            printf '#!/bin/sh\nfor a; do case "$a" in *.s) exec %s "$@";; esac; done\nexec ccache %s "$@"\n' "$(xcrun -find $t)" "$(xcrun -find $t)" > "$CCACHE_WRAP/$t"
             chmod +x "$CCACHE_WRAP/$t"
           done
           cat "$CCACHE_WRAP/clang"

@@ -519,7 +519,16 @@ cpus=4 to test PSCI + the EL2 drop + SGIs.
   init works**: `SD ret=0 stage=0x64`, `i2cfix=0` (I2C5 still clocked
   after hekate), `ldo2=0xF2` (LDO2 3.3 V, normal mode), `calto=0`
   (autocal finished), `calsts=12181518`, `ocr=C0FF8000` (powered up,
-  CCS=1: SDHC/SDXC), `RCA 0x5048`. LBA0/MBR/GPT lines: pending.
+  CCS=1: SDHC/SDXC), `RCA 0x5048`. **SD reads work**: `LBA0 sig=AA55`,
+  hybrid MBR as made by hekate's partition manager: type 0x0C at LBA
+  0x8000, 0x15818000 sectors (= sdc1 FAT32, 172 GB), a second entry
+  (user read the type as 0xE0, LBA 0x36020000, 0x03A4F800 sectors: likely
+  the Linux partition), type 0xEE protective at LBA 1; `GPT n=0x0A
+  esz=0x80` (10 entries = the 10 partitions Linux sees). Partition names
+  not reported.
+  **Result: every shim-nx stage passed on the first hardware run.** The
+  hardware facts that xnu patches 0200-0207 rely on are now confirmed on
+  the device, not just read from hekate's source.
 - **The user's SD card** (461 GB, 10 partitions): `sdc1` FAT32 "SWITCH SD"
   (atmosphere, emuMMC, Nintendo, hekate 6.5.4 already installed:
   `update.bin` identical to the release), `sdc2` ext4 "SWR-NOB" = switchroot
@@ -546,8 +555,7 @@ cpus=4 to test PSCI + the EL2 drop + SGIs.
 
 ## Next steps
 
-1. **Run shim-nx on hardware**, then fix whatever stage fails. After
-   that: MMU + caches (from `shim/mmu.c`, 4K granule) to speed up the
+1. ~~Run shim-nx on hardware~~ done 2026-11-05: all stages pass. Next: MMU + caches (from `shim/mmu.c`, 4K granule) to speed up the
    payload copy, and a DRAM benchmark. Secondaries are started by XNU
    itself through PSCI CPU_ON, so the EL2 drop belongs in XNU (step 3).
    SD in the shim is diagnostics only now; boot uses the payload in

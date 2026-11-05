@@ -534,6 +534,24 @@ cpus=4 to test PSCI + the EL2 drop + SGIs.
   acquired by Runner of type hosted even after multiple attempts"**
   (15 min queue, no minutes used; GitHub also warns about macOS arm64
   capacity). Re-ran with `gh run rerun`.
+- **Run 42123957935 attempt 2: FIRST NX KERNEL BUILT** (4 min 51 s, warm
+  ccache). 214 patches applied; only blacktop's superseded variants
+  skipped (iobuffermemd_monterey, skywalk_sonoma, syntax_checker_sonoma,
+  TrustCache). `kernel.development.sweet` 17,579,272 bytes, SHA-256
+  e2087ea8...347b, in `work/ci-42123957935/` (git-ignored). Contains
+  the NX strings (`NX GIC: GICv2 ...`, `NX SD: ...`, `NX SD LOG: ...`,
+  `NX FB: no display driver yet`, `IOFindBSDRoot: NX SD root ...`), linked
+  at 0xfffffff007004000 (TOPAZ_4K layout), entry 0xfffffff007454488,
+  kernel_end 0xfffffff00855c000 (~37 MB mapped from phys_base).
+- **First boot files**: `work/sdcard-init/` = `tools/nx-sdcard.sh
+  work/sdcard-init work/ci-42123957935/kernel.development.sweet --init`:
+  `switchroot/ios/bl33.bin` (17,034,384 bytes, SHA-256 7a227b37...88f5:
+  shim + payload with sweet-init RAM disk at PA 0x102554000,
+  cmdline `debug=0xc keepsyms=1 -noprogress cpus=1 rd=md0`) and
+  `bootloader/ini/ios-nx.ini` ("[iOS NX]", now
+  `boot_prefixes=/switchroot/ios/` with the leading slash, as in the
+  proven entry). `bl31.bin` is already on the card in
+  `switchroot/ios/`. **Not copied to the card yet** (it's in the Switch).
 - The CI ccache wrapper now bypasses ccache for `.s` inputs (as
   `tools/build-local.sh` already did): assembler files include the
   generated `assym.s`, which ccache doesn't hash, so stale struct offsets

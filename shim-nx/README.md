@@ -19,7 +19,7 @@ to EL1.
 
     [iOS NX shim]
     l4t=1
-    boot_prefixes=switchroot/ios/
+    boot_prefixes=/switchroot/ios/
 
 `l4t=1` selects the L4T launcher. Every key in the section is also passed
 to BL33 as `key=val` text at 0xA9FC0000; the shim prints them on screen.

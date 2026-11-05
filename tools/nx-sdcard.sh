@@ -68,7 +68,7 @@ fi
 cat > "$out/bootloader/ini/ios-nx.ini" <<'EOF'
 [iOS NX]
 l4t=1
-boot_prefixes=switchroot/ios/
+boot_prefixes=/switchroot/ios/
 EOF
 echo "cmdline: $cmdline"
 ls -l "$out/switchroot/ios" "$out/bootloader/ini/ios-nx.ini"

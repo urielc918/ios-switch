@@ -511,7 +511,15 @@ cpus=4 to test PSCI + the EL2 drop + SGIs.
   UV stride 1440, pitch-linear), so the take-over only rewrote START_ADDR
   and window A now scans out 0xF0000000 (blue screen seen). `ENV`
   parsed: `l4t=1`, `boot_prefixes=/switchroot/ios/`, `autoboot=2`,
-  `autoboot_list=1`, `loader_rev=7`. PSCI/GIC/SD lines: pending.
+  `autoboot_list=1`, `loader_rev=7`.
+  `PSCI ver=00010001` (PSCI 1.1). **GICv2 + vtimer work**: `VTIMER
+  ticks=0000000A us=000F4258` (10 IRQs in 1,000,024 us), spur 0, other 0,
+  `GIC OK`: INTID 27 arrives as a Group 1 IRQ at EL1 through the MMIO
+  GIC-400 CPU interface, which is what xnu patch 0202 assumes. **SD cold
+  init works**: `SD ret=0 stage=0x64`, `i2cfix=0` (I2C5 still clocked
+  after hekate), `ldo2=0xF2` (LDO2 3.3 V, normal mode), `calto=0`
+  (autocal finished), `calsts=12181518`, `ocr=C0FF8000` (powered up,
+  CCS=1: SDHC/SDXC), `RCA 0x5048`. LBA0/MBR/GPT lines: pending.
 - **The user's SD card** (461 GB, 10 partitions): `sdc1` FAT32 "SWITCH SD"
   (atmosphere, emuMMC, Nintendo, hekate 6.5.4 already installed:
   `update.bin` identical to the release), `sdc2` ext4 "SWR-NOB" = switchroot

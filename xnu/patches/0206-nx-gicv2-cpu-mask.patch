@@ -1,0 +1,108 @@
+From 507201822a026d15e37dd861674a029ca267fccf Mon Sep 17 00:00:00 2001
+From: x <x@x>
+Date: Thu, 5 Nov 2026 13:36:18 -0800
+Subject: [PATCH] nx-0206: GICv2 SGI targets from each core's GICD_ITARGETSR0
+ mask (fallback 1 << Aff0)
+
+---
+ iokit/Kernel/arm/SweetCPU.cpp |  4 ++--
+ pexpert/arm/pe_fiq.c          | 23 +++++++++++++++++++----
+ pexpert/pexpert/arm/protos.h  |  2 +-
+ pexpert/pexpert/arm64/SWEET.h |  1 +
+ 4 files changed, 23 insertions(+), 7 deletions(-)
+
+diff --git a/iokit/Kernel/arm/SweetCPU.cpp b/iokit/Kernel/arm/SweetCPU.cpp
+index 50c274e..8691ce9 100644
+--- a/iokit/Kernel/arm/SweetCPU.cpp
++++ b/iokit/Kernel/arm/SweetCPU.cpp
+@@ -225,8 +225,8 @@ SweetCPU::signalCPU(IOCPU *target)
+ 		panic("SWEET CPU: SGI target requires unsupported range selector");
+ 	}
+ #if defined(NX_SWITCH)
+-	/* GICv2: memory-mapped GICD_SGIR, CPU interface number = Aff0 on T210 */
+-	nx_gic_send_sgi(1U << aff0, SWEET_IPI_SGI);
++	/* GICv2: memory-mapped GICD_SGIR, target mask recorded per core */
++	nx_gic_send_sgi(aff0, SWEET_IPI_SGI);
+ 	__builtin_arm_isb(ISB_SY);
+ #else
+ 	uint64_t sgi = (((mpidr >> 32) & 0xff) << 48) |
+diff --git a/pexpert/arm/pe_fiq.c b/pexpert/arm/pe_fiq.c
+index 14a71a2..6e0bb77 100644
+--- a/pexpert/arm/pe_fiq.c
++++ b/pexpert/arm/pe_fiq.c
+@@ -27,6 +27,8 @@ SECURITY_READ_ONLY_LATE(uint32_t) sweet_vtimer_intid = SWEET_VTIMER_INTID;
+ 
+ static vm_offset_t nx_gicd_base;
+ static vm_offset_t nx_gicc_base;
++/* GICv2 CPU interface mask of each core, by MPIDR Aff0 (from GICD_ITARGETSR0). */
++static uint8_t nx_gic_cpu_mask[8];
+ 
+ static inline uint32_t
+ nx_rd32(vm_offset_t addr)
+@@ -83,6 +85,14 @@ pe_init_fiq()
+ 		nx_wr32(nx_gicd_base + GICD_V2_CTLR, nx_rd32(nx_gicd_base + GICD_V2_CTLR) | 0x1);
+ 	}
+ 
++	// Each CPU reads its own interface mask from the banked GICD_ITARGETSR0.
++	uint64_t aff0 = __builtin_arm_rsr64("MPIDR_EL1") & 0xFF;
++	uint8_t mask = (uint8_t)(nx_rd32(nx_gicd_base + GICD_V2_ITARGETSR0) & 0xFF);
++	if (aff0 < sizeof(nx_gic_cpu_mask)) {
++		nx_gic_cpu_mask[aff0] = mask;
++	}
++	kprintf("NX GIC: CPU Aff0 %llu has GIC interface mask 0x%02x\n", aff0, mask);
++
+ 	// SGIs and PPIs are banked per CPU: set them up on every CPU.
+ 	for (unsigned int i = 0; i < 32; i += 4) {
+ 		nx_wr32(nx_gicd_base + GICD_V2_IPRIORITYR0 + i, 0xA0A0A0A0);
+@@ -109,14 +119,19 @@ nx_gic_eoi(uint32_t iar)
+ }
+ 
+ /*
+- * GICD_SGIR target list: one bit per CPU interface. On T210 the CPU
+- * interface number is the core's MPIDR Aff0 (one cluster, cores 0-3).
++ * SGI to the core with MPIDR Aff0 aff0. GICD_SGIR takes a target list with
++ * one bit per CPU interface: use the mask that core recorded in
++ * pe_init_fiq, or 1 << Aff0 if it hasn't run yet (one cluster on T210).
+  */
+ void
+-nx_gic_send_sgi(uint32_t cpu_mask, uint32_t sgi)
++nx_gic_send_sgi(uint32_t aff0, uint32_t sgi)
+ {
++	uint32_t mask = aff0 < sizeof(nx_gic_cpu_mask) ? nx_gic_cpu_mask[aff0] : 0;
++	if (mask == 0) {
++		mask = 1u << (aff0 & 7);
++	}
+ 	__builtin_arm_dsb(DSB_ISHST);
+-	nx_wr32(nx_gicd_base + GICD_V2_SGIR, ((cpu_mask & 0xFF) << 16) | (sgi & 0xF));
++	nx_wr32(nx_gicd_base + GICD_V2_SGIR, ((mask & 0xFF) << 16) | (sgi & 0xF));
+ }
+ #endif /* NX_GIC_V2 */
+ 
+diff --git a/pexpert/pexpert/arm/protos.h b/pexpert/pexpert/arm/protos.h
+index b9c3202..78a01e5 100644
+--- a/pexpert/pexpert/arm/protos.h
++++ b/pexpert/pexpert/arm/protos.h
+@@ -43,7 +43,7 @@ extern uint32_t sweet_vtimer_intid;
+ /* pexpert/arm/pe_fiq.c: GICv2 CPU interface and SGIs (Nintendo Switch) */
+ uint32_t nx_gic_ack(void);
+ void nx_gic_eoi(uint32_t iar);
+-void nx_gic_send_sgi(uint32_t cpu_mask, uint32_t sgi);
++void nx_gic_send_sgi(uint32_t aff0, uint32_t sgi);
+ #endif
+ 
+ #ifdef PRIVATE
+diff --git a/pexpert/pexpert/arm64/SWEET.h b/pexpert/pexpert/arm64/SWEET.h
+index ac13146..d3dbc67 100644
+--- a/pexpert/pexpert/arm64/SWEET.h
++++ b/pexpert/pexpert/arm64/SWEET.h
+@@ -114,6 +114,7 @@
+ #define GICD_V2_CTLR              0x000
+ #define GICD_V2_ISENABLER0        0x100
+ #define GICD_V2_IPRIORITYR0       0x400
++#define GICD_V2_ITARGETSR0        0x800
+ #define GICD_V2_SGIR              0xF00
+ #define GICC_V2_CTLR              0x00
+ #define GICC_V2_PMR               0x04
+-- 
+2.55.0
+

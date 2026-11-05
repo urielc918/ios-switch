@@ -329,9 +329,9 @@ HEAD), and so what the NX patches have to deal with:
 
 ## XNU NX patches (2026-11-05, not built yet)
 
-`xnu/patches/0200-0205-nx-*.patch`, made on branch `nx` of
+`xnu/patches/0200-0206-nx-*.patch`, made on branch `nx` of
 `work/xnu-src/xnu` (`master` = pristine + topaz series, unchanged).
-Checked: all six apply in order with `git apply --check` on a `master`
+Checked: all seven apply in order with `git apply --check` on a `master`
 worktree, and the result is identical to `nx`. **Not compiled**: XNU only
 builds on macOS (CI or `tools/build-local.sh`). The GICv2 C block was
 compiled on its own with stubs (`clang -Weverything`, no warnings).
@@ -363,9 +363,11 @@ cortex-a53 (ARMv8.0, fine on the A57).
   enables vtimer + SWEET_IPI_SGI (1), GICC_PMR 0xF0, BPR 0, GICC_CTLR 1.
   `nx_gic_ack/eoi/send_sgi` (protos.h). sleh.c `sleh_irq` NX branch: IAR
   from GICC (intid = iar & 0x3FF), EOIR with the full IAR. SweetCPU
-  `signalCPU`: GICD_SGIR = (1 << Aff0) << 16 | SGI. **Assumption**: the
-  GICv2 CPU interface number = MPIDR Aff0 on T210 (could be checked
-  per CPU by reading the banked GICD_ITARGETSR0).
+  `signalCPU`: GICD_SGIR = (1 << Aff0) << 16 | SGI. 0206 replaces the
+  assumption "GIC interface number = Aff0": each core records its own
+  mask from the banked GICD_ITARGETSR0 in `pe_init_fiq` (logged as
+  `NX GIC: CPU Aff0 N has GIC interface mask 0x..`), and
+  `nx_gic_send_sgi(aff0, sgi)` uses it, falling back to 1 << Aff0.
 - **0203 secondary EL2**: `sweet_secondary_entry` already drops EL2->EL1
   (topaz needed it too); under NX it skips the `ICC_SRE_EL2` write. The
   GIC-400 has no system-register interface, so the A57 would most likely

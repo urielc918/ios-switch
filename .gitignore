@@ -21,3 +21,5 @@ xnu/out*/
 shim/out/
 shim-nx/out/
 __pycache__/
+tools/rcm-test/*.bin
+tools/rcm-test/*.elf

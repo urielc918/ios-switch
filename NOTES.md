@@ -417,6 +417,17 @@ cpus=4 to test PSCI + the EL2 drop + SGIs.
   TIMERUS and reboot-to-RCM all work. hekate's black screen is therefore
   the panel/backlight or hekate dying in early init (DRAM, PMIC, display),
   not the transfer. Open question for the user: does Horizon show a picture?
+- Horizon shows a picture (user, 13:27), so the panel is fine.
+- **Likely cause of hekate's black screen: its low-battery gate.**
+  `bootloader/main.c` `_check_low_battery()` (line 1158, called at
+  startup): if MAX17050 AvgVCELL < 3100 mV (not charging) or < 3300 mV
+  (BQ24193 says charging), hekate loops with the **display off**. Power
+  press or a charge-status change shows a battery icon (bottom left) for
+  15 s; when that times out **and not charging, it powers off** (matches
+  the USB disconnects 12-70 s after each send). **VOL+ and VOL- held
+  together** skips the check. Our shim-nx never runs this check, but it
+  only runs after hekate, so the battery has to be above the threshold
+  anyway (or hold both volume keys while hekate starts).
 - User suspects a **faulty charger**. Until the Switch can show
   hekate's screen, nothing else can be tested on hardware. Next try: a
   known-good charger and cable, the PC's rear port `usb 1-1`, then

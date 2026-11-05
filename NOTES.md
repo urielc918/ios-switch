@@ -440,6 +440,27 @@ First NX kernel boot (once CI has built one):
 first goal is the text console on the panel. Start with cpus=1, then
 cpus=4 to test PSCI + the EL2 drop + SGIs.
 
+## CI (2026-11-05)
+
+- Repo: **https://github.com/urielc918/ios-switch** (private, created
+  with `gh` as urielc918; push over HTTPS with
+  `git -c credential.helper= -c credential.helper='!gh auth git-credential' push`.
+  The machine's SSH key isn't registered on GitHub). The first push of
+  `main` did not trigger the path-filtered workflow; start builds with
+  `gh workflow run xnu -R urielc918/ios-switch --ref main`.
+- Run 42121484163 was cancelled at once: **"The configuration
+  'macos-14-arm64-us-xl' is not supported"**: GitHub retired the macOS 14
+  images on 2026-11-02 (actions/runner-images). macos-15 arm64 has Xcode
+  16.0-16.4 and 26.x, **no Xcode 15**. The workflow comment says that
+  Xcode 16's `iig` emits `IORPC.kernelContent`, which xnu-8796 lacks.
+- Fix: patch **0153-xcode16-iig-iorpc-kernelcontent**: `IORPC` gets
+  `IORPCMessage * kernelContent` under `#ifdef KERNEL`, last member, as in
+  apple-oss-distributions/xnu main, and `IOUserServer.cpp` fills it at
+  both places the kernel builds an IORPC (`IOUserServer::server`,
+  `IOUserServerUEXTTrap`), as upstream does. Workflow `runs-on: macos-15`
+  (it already selects the oldest installed Xcode). Private repo: macOS
+  minutes count 10x.
+
 ## Hardware log (2026-11-05)
 
 - RCM works and is reachable: `0955:7321` "APX", device id

@@ -4,6 +4,8 @@
  *   2. move DC window A to our framebuffer -> display programming works
  *   3. text console: CPU/EL state, BL33 env, PSCI, GICv2 + virtual timer,
  *      SD card cold init and sector 0
+ *   4. if build.sh appended an xnu payload: VOL+ (or ini nx_autoboot=1)
+ *      copies it to the upper bank and jumps to xnu (loader.c)
  * Volume-down at any point (including the panic screen) reboots to RCM.
  */
 #include "t210.h"
@@ -11,9 +13,10 @@
 #include "display.h"
 #include "i2c.h"
 #include "sdmmc.h"
+#include "loader.h"
 
 #define HEKATE_FB	0xF5A00000UL
-#define SHIM_FB		0xF0000000UL
+#define SHIM_FB		FB_BASE		/* build.sh: 0xF0000000 */
 #define BL33_ENV	0xA9FC0000UL
 #define BL33_ENV_MAGIC_ADDR (BL33_ENV - 4)
 #define BL33_ENV_MAGIC	0x33334C42
@@ -44,6 +47,26 @@ static void __attribute__((noreturn)) idle(void)
 	con_str("", "VOL- = reboot to RCM");
 	for (;;)
 		poll_rcm();
+}
+
+/* Value of key in hekate's BL33 env ("key=val\n" lines), or 0. */
+static const volatile char *env_get(const char *key)
+{
+	if (rd32(BL33_ENV_MAGIC_ADDR) != BL33_ENV_MAGIC)
+		return 0;
+	const volatile char *p = (const volatile char *)BL33_ENV;
+	while (*p) {
+		int i = 0;
+		while (key[i] && p[i] == key[i])
+			i++;
+		if (!key[i] && p[i] == '=')
+			return p + i + 1;
+		while (*p && *p != '\n')
+			p++;
+		if (*p)
+			p++;
+	}
+	return 0;
 }
 
 static void fill(uintptr_t fb, uint32_t c)
@@ -284,6 +307,28 @@ void shim_main(uint64_t entry_el, uint64_t entry_x0)
 	test_gic();
 	poll_rcm();
 	test_sd();
-	stage = "idle";
+	poll_rcm();
+
+	stage = "loader";
+	const struct payload *p = loader_find();
+	if (!p) {
+		con_str("XNU", "no payload in bl33.bin");
+		stage = "idle";
+		idle();
+	}
+	const char *err = loader_check(p);
+	if (err) {
+		con_str("XNU", err);
+		idle();
+	}
+	const volatile char *ab = env_get("nx_autoboot");
+	if (!(ab && *ab == '1')) {
+		con_str("", "VOL+ = boot xnu  VOL- = RCM");
+		while (!vol_up_pressed())
+			poll_rcm();
+	}
+	stage = "xnu copy";
+	err = loader_boot(p, (uintptr_t)con_fb);
+	con_str("XNU", err);
 	idle();
 }

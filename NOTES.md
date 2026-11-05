@@ -6,7 +6,8 @@ approach. Status as of 2026-11-05: **design and fact-gathering done, no
 Switch-specific code written yet.** Session 2 (same day) re-read hekate's
 L4T launcher for the BL33 handoff and fixed the `shim-nx/` design (see
 "Session 2" below). `shim-nx/` is now **written and builds, but has not
-been run on hardware yet** (see "shim-nx status").
+been run on hardware yet** (see "shim-nx status"). Session 3 added the
+XNU loader to shim-nx and `tools/mkadt-nx.py` (see "Session 3").
 
 ## Where things are
 
@@ -241,13 +242,99 @@ been run on hardware yet**. How to deploy it and what each screen means:
   so the numbers wouldn't say anything about DRAM clock. Do it after
   adding page tables (see `shim/mmu.c`).
 
+## Session 3 (2026-11-05): loader path and NX ADT
+
+Boot path for XNU (decided): **the payload rides inside `bl33.bin`**,
+as on topaz, where it rode behind the shim Image. hekate's `_l4t_sd_load`
+reads the whole file at 0xAA000000, whatever its size, so the shim
+needs no SD/FAT driver to boot XNU.
+- hekate memory map (`bdk/memory_map.h`) while it loads: heap
+  0x82000000-0x92000000, RAM disk buffer 0x95000000 (only for its own
+  features), PSTORE 0xB0000000 (2 MiB, L4T panic log; overwriting it is
+  harmless), **eMMC sector cache 0xC7000000**, SDMMC DMA buffers
+  0xE5000000/0xEF000000/0xF0000000, Nyx buffers 0xED000000-0xF6xxxxxx,
+  IPL FB 0xF5A00000. So `bl33.bin` must end below **0xC7000000** (~460 MiB
+  total), and `shim-nx/build.sh` refuses a larger file. The shim FB at
+  0xF0000000 is hekate's eMMC DMA buffer, which is free after handoff.
+- `shim-nx/build.sh [PAYLOAD]` appends the payload at the first 4K
+  boundary after `_end`. `shim-nx/loader.c`: `loader_find` (magic
+  SWEETXNU there), `loader_check` (version, payload end < 0xC7000000,
+  phys_base in the upper bank, kernel fits), `loader_boot` (copy segments
+  to phys_base + (va - virt_base), ADT + boot_args behind the kernel as
+  on topaz, video = the FB being scanned out (720x1280, stride 2880),
+  disables INTID 27 and GICC, masks DAIF, IC IALLU, jumps with x0 =
+  boot_args PA at EL1, MMU off).
+- After the tests the shim waits: **VOL+ boots XNU**, VOL- = RCM. The
+  hekate ini key `nx_autoboot=1` boots without waiting (read from the
+  BL33 env with `env_get`).
+- `shim/payload.h`: the payload and boot_args structs, moved out of
+  `shim/loader.c` so both shims share them. The old loader still compiles
+  (checked with clang for aarch64; GNU cross gcc isn't installed).
+- `FB_BASE` in shim-nx is now the shim FB (0xF0000000). Stage 1 sets
+  `con_fb` to hekate's FB explicitly.
+
+`tools/mkadt-nx.py OUT [--dump] [--product D20AP.adt] [--cpus N]`
+(imports helpers from `mkadt.py`):
+- Identity iPhone 8: `D20AP|iPhone10,1|nintendo,icosa|nvidia,tegra210|
+  xiaomi,sweet|AppleARM`, model iPhone10,1, target D20/D20AP,
+  display-scale 2, chip-id 0x8015, synthetic ECID 0x4E58000000000001.
+  `xiaomi,sweet` stays because SweetPlatformExpert matches it.
+- /chosen dram-base 0x1_00000000, dram-size 0x80000000.
+- 4 CPUs, compatible `arm,cortex-a57|ARM,v8`, reg 0-3. **SweetCPU's
+  IONameMatch (`qcom,kryo470`) must get `ARM,v8` in the NX patch.**
+- `/arm-io` with SOC_BASE 0x50000000. `/arm-io/gic`: compatible
+  `arm,gic-400`, reg = <GICD-SOC 0x1000 GICC-SOC 0x2000> (pe_fiq.c reads
+  four u64s; for GICv2 the second region is the CPU interface),
+  virtual-timer-intid 27.
+- `/arm-io/disp0` canvas 750x1334; `/sweet-fbcon` reg <0xF0000000
+  0x400000> 720x1280 stride 2880 (pe_serial.c `fbcon_probe` reads it, so
+  the text console needs no XNU change).
+- `/nx-sdmmc` reg <0x700B0000 0x200> for the planned SD driver.
+- No wlan, no sweet-ufs. No home-button-type (iPhone 8 has a Home
+  button). /product only with `--product` (the real D20AP tree from the
+  iPhone 8 IPSW, not in the repo).
+
+Checked on the host: a synthetic Mach-O (`__TEXT` + `__DATA` +
+LC_UNIXTHREAD) -> `mkpayload.py` with the NX ADT -> `build.sh PAYLOAD`
+-> a Python model of loader.c found the payload right after `_end`,
+segments at 0x101004000/0x101008000, entry PA 0x101005000, ADT intact.
+There is no real XNU kernel locally (it only builds on macOS CI).
+
+What the SWEET XNU tree does at boot (from `work/xnu-src/xnu`, patched =
+HEAD), and so what the NX patches have to deal with:
+- GIC: `pexpert/arm/pe_fiq.c` `pe_init_fiq` finds the redistributor by
+  GICR_TYPER, writes GICR_IGROUPR0/IPRIORITYR/ISENABLER0 and uses ICC_*
+  system registers (GICv3 only). `sleh_irq` and `SweetCPU::signalCPU` are
+  also GICv3 (see "Hardware facts").
+- Early debug framebuffer is hard-coded: `osfmk/arm64/sweet_early.c`
+  (0x5c000000 topaz / 0x9c000000 sweet, 1080x2400, stride 4320),
+  `osfmk/arm64/start.s` (~lines 519-525, 687-715) and `arm_vm_init.c`
+  (~1856, 1884) map it VA=PA with L2 blocks.
+- The fbcon text console comes from the ADT (`/sweet-fbcon`), so it's fine.
+- Root device: `sweet_ufs_rootdev()` (bsd/dev/sweet_ufs.c) runs only for
+  `rd=ufsroot0`, and it also starts the log thread, sampler, touch, keys
+  and USB. With `rd=md0` (RAM disk payload segment, `mkpayload.py
+  --ramdisk`) none of that runs, so **the first NX target is a RAM disk
+  root**.
+- SweetFramebuffer.cpp `start` (AppleCLCD, matches `sweet,display` =
+  our disp0) calls `topaz_modem_init`, `topaz_audio_init`,
+  `sweet_busy_init`, and `topaz_adreno_init` (boot-arg gpu=1), and
+  programs MDP/DSI registers: all Qualcomm MMIO. **NX must gate this**:
+  either drop disp0 from the ADT for the first boots (no AppleCLCD, text
+  console only) or patch SweetFramebuffer to a plain RAM framebuffer.
+- KernelConfigTables: SweetHIDButtons, SweetHIDTouch and SweetBattery
+  match IOResources, so they always start; SweetBattery calls
+  `sweet_i2c1_init` and `sweet_cpufreq_max` (Qualcomm). They need an NX
+  gate.
+
 ## Next steps
 
 1. **Run shim-nx on hardware**, then fix whatever stage fails. After
-   that: MMU + caches (from `shim/mmu.c`, 4K granule), a DRAM benchmark,
-   and starting secondaries with PSCI CPU_ON (they enter at EL2 too, so
-   they need the same drop), then loading a payload from SD
-   (multi-block reads, maybe 4-bit/HS).
+   that: MMU + caches (from `shim/mmu.c`, 4K granule) to speed up the
+   payload copy, and a DRAM benchmark. Secondaries are started by XNU
+   itself through PSCI CPU_ON, so the EL2 drop belongs in XNU (step 3).
+   SD in the shim is diagnostics only now; boot uses the payload in
+   bl33.bin.
 2. **`tools/mkadt-nx.py`** from `tools/mkadt.py`: iPhone 8 identity,
    4x A57 (`IONameMatch` for SweetCPU must change from `qcom,kryo470`),
    GICv2 regs, memory 0x1_00000000 + 2 GiB, `/nx-sdmmc` node.

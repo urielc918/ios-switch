@@ -521,6 +521,12 @@ cpus=4 to test PSCI + the EL2 drop + SGIs.
     only in sources staged by the `.sh` scripts (pthread, bearssl, HFS)
     and a few files the build edits (MakeInc.def/.cmd, vfs_subr.c,
     make_symbol_aliasing.sh, Libsyscall.xcconfig).
+  - Despite the failure, `make -k` compiled every other NX-touched file
+    with Xcode 16's clang (pe_fiq.c, sleh.c, SweetCPU.cpp,
+    SweetFramebuffer.cpp, SweetBattery.cpp, KernelConfigTables.cpp,
+    start.s, arm_vm_init.c, sweet_early.c): warnings only, no errors.
+    New NX-caused warning: `SweetFramebuffer.cpp:1191 unused function
+    'sweet_cons_show'` (fine). nx_sdmmc.c wasn't compiled (0205 skipped).
   - Order check now done like CI: `master~1` (pristine) + every
     `xnu/patches/*.patch` in sorted order: only 0031/0041 skip locally
     (no staged HFS sources); 0153 and 0960-0967 apply.

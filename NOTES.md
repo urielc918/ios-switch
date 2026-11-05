@@ -5,7 +5,8 @@ Goal: bring up XNU (xnu-8796, iOS 16 generation) on a Nintendo Switch
 approach. Status as of 2026-11-05: **design and fact-gathering done, no
 Switch-specific code written yet.** Session 2 (same day) re-read hekate's
 L4T launcher for the BL33 handoff and fixed the `shim-nx/` design (see
-"Session 2" below); `shim-nx/` itself is still not started.
+"Session 2" below). `shim-nx/` is now **written and builds, but has not
+been run on hardware yet** (see "shim-nx status").
 
 ## Where things are
 
@@ -169,7 +170,7 @@ Reusing parts of the old shim:
 - `shim.c` `exc_handler` (the on-screen panic) is the model for the
   shim-nx version: replace `reset()` with reboot-to-RCM.
 
-shim-nx design (fixed, code not written yet):
+shim-nx design (implemented, see "shim-nx status" below):
 - Files: `start.S` (header, EL2->EL1, vectors), `shim.ld` (linked at the
   absolute address **0xAA000000**: the load address is fixed, so no PIC
   is needed), `t210.h` (MMIO bases and helpers), `display.c`, `i2c.c`
@@ -199,14 +200,54 @@ shim-nx design (fixed, code not written yet):
   if no IRQs arrive, check that first. PPIs bypass the Tegra legacy
   interrupt controller; SPIs will have to go through it later.
 
+## shim-nx status (2026-11-05)
+
+`shim-nx/` builds with `./build.sh` (clang 22, `-Werror`) into
+`out/bl33.bin` (~50 KB including .bss and the 32 KB stack). It has **not
+been run on hardware yet**. How to deploy it and what each screen means:
+`shim-nx/README.md` (hekate ini: `l4t=1`, `boot_prefixes=switchroot/ios/`).
+
+- Files: `start.S` (header, EL2->EL1, vectors), `t210.h` (register map),
+  `display.c` (window A take-over), `i2c.c` (I2C5, MAX77620), `sdmmc.c`
+  (SD cold init + PIO single-block read), `main.c` (stages and tests).
+  It uses `../shim/console.c` and `font.h`. `shim/console.h` and
+  `console.c` now take `FB_BASE/FB_W/FB_H/FB_STRIDE/SCALE` via `-D`; the
+  defaults are unchanged for sweet.
+- Checked on the host: header bytes (`b _start`, 0 at +0x10, image size
+  at +0x18), the link puts everything at 0xAA000000, there are no
+  libc/`memset` calls, and the worst-case console output (8 env lines +
+  4 GPT partitions) fits 720x1280 at SCALE 2 (39 rows).
+- Choices made while writing it:
+  - Shim FB at **0xF0000000**.
+  - Delays use the T210 microsecond timer (TIMERUS 0x60005010), which
+    hekate leaves running. If the screen stays green and nothing else
+    happens, suspect that this timer is stopped (stage 1 waits 0.3 s on it).
+  - Window A take-over only rewrites START_ADDR if the window already
+    looks like hekate's (enabled, depth 0xC, 720x1280, pitch 2880,
+    kind 0); otherwise it does the full program from the register list
+    above. Holding **volume-up** skips the take-over (console drawn into
+    hekate's FB).
+  - SD: 1-bit bus, ~386 kHz while identifying, then 24.7 MHz, PIO, no
+    host v4/DMA. The SD power-up order follows hekate
+    (`_sdmmc_config_sdmmc1` + `sdmmc_init`): pads back to SPIO (port M
+    0-5) -> NO_IOPOWER pulse -> GPIO E4 card VDD -> PWR_DET -> LDO2 0xF2
+    -> pad slew 0x5xxxxxxx -> legacy TM clock -> SDMMC1 clock (PLLP/16.5)
+    -> SWRST_ALL -> IOSPARE/IOTRIM/VENCLKCTL (trim 2, tap 4)/VREF 7
+    -> autocal offsets 0x7D/0 -> autocal -> internal clock -> 3.3 V
+    bus power -> card clock.
+  - I2C5 is re-clocked only if CAR shows it disabled or held in reset
+    (`i2cfix=` on screen).
+- No memory benchmark: with the MMU off every access is Device memory,
+  so the numbers wouldn't say anything about DRAM clock. Do it after
+  adding page tables (see `shim/mmu.c`).
+
 ## Next steps
 
-1. **`shim-nx/`**: entry header at 0xAA000000, EL2->EL1, reprogram DC
-   window A to a shim framebuffer, reuse `shim/console.c` + `font.h`
-   (make FB_* overridable), PSCI version probe, GICv2 + vtimer IRQ test,
-   then I2C5 + LDO2 + SDMMC1 cold init and read sector 0 (show MBR/GPT on
-   screen). Build with clang/lld. Reboot-to-RCM on volume-down for a quick
-   retry loop.
+1. **Run shim-nx on hardware**, then fix whatever stage fails. After
+   that: MMU + caches (from `shim/mmu.c`, 4K granule), a DRAM benchmark,
+   and starting secondaries with PSCI CPU_ON (they enter at EL2 too, so
+   they need the same drop), then loading a payload from SD
+   (multi-block reads, maybe 4-bit/HS).
 2. **`tools/mkadt-nx.py`** from `tools/mkadt.py`: iPhone 8 identity,
    4x A57 (`IONameMatch` for SweetCPU must change from `qcom,kryo470`),
    GICv2 regs, memory 0x1_00000000 + 2 GiB, `/nx-sdmmc` node.

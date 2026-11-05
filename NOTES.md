@@ -3,7 +3,9 @@
 Goal: bring up XNU (xnu-8796, iOS 16 generation) on a Nintendo Switch
 (rev 0 / Erista, Tegra X1 T210), following the dipa-studio/ios-sweet
 approach. Status as of 2026-11-05: **design and fact-gathering done, no
-Switch-specific code written yet.**
+Switch-specific code written yet.** Session 2 (same day) re-read hekate's
+L4T launcher for the BL33 handoff and fixed the `shim-nx/` design (see
+"Session 2" below); `shim-nx/` itself is still not started.
 
 ## Where things are
 
@@ -119,6 +121,83 @@ OUT +0x20, IN +0x30). Power = MAX77620 ONOFFSTAT (0x15) bit 2.
 
 Reboot: PMC_SCRATCH0 (0x50) bit 1 = reboot to RCM, then PMC_CNTRL (0x0)
 bit 4 = main reset. Power off: MAX77620 ONOFFCNFG1 (0x41) bit 1.
+
+## Session 2 (2026-11-05): handoff details and shim-nx design
+
+Environment:
+- The bind mount `/home/j/ios-switch` is now active (481 GB free there).
+- The LLVM tools are installed (`llvm-objcopy`, `llvm-nm`, `llvm-readelf`,
+  `llvm-objdump`), so the build needs no GNU binutils. The old
+  `shim/build.sh` calls `aarch64-linux-gnu-gcc`, which isn't installed,
+  so it can't be reused as-is.
+
+More hekate L4T launcher facts (`bootloader/l4t/l4t.c`, `bdk/soc/hw_init.c`):
+- ini keys it reads: `boot_prefixes` (required; if it's missing you get
+  "Path missing"). `bl31.bin` and `bl33.bin` are loaded from that path.
+  Optional keys: `uart_port`, `sld_type`, `ram_oc`, `ram_oc_vdd2`,
+  `ram_oc_vddq`, `ram_oc_opt`. SC7-Entry, SC7-Exit and BPMP-FW always come
+  from `bootloader/sys/l4t/`. On T210 the Minerva MTC table is also
+  required ("Minerva missing" otherwise). Use the switchroot L4T files.
+- BL33 env block: every ini key goes in as `key=val\n` text at
+  **0xA9FC0000** (BL33_LOAD_BASE - 256K), followed by `autoboot`,
+  `autoboot_list` and `loader_rev=7`. A valid block is marked by magic
+  0x33334C42 at 0xA9FBFFFC. The shim could take its options from here
+  (e.g. a `nx_` key in the ini).
+- BL31 gets `FLAGS_PMC_NON_SECURE`, so the shim and XNU can write PMC
+  directly (needed for the reboot-to-RCM bit) without going through an SMC.
+- On T210 the BPMP firmware starts BL31, and `SYSCTR0` counters are reset
+  just before that.
+- Carveouts: every MC security carveout has `BOM_HI = 0`, i.e. all of them
+  are in the low bank, just below TZDRAM (TZDRAM is 1 MiB at 0xFFF00000,
+  or 8 MiB at 0xFF800000 if hekate is built with the NVDEC/TSEC carveouts).
+  This confirms the plan to give XNU **0x1_00000000 + 2 GiB**, which no
+  carveout touches. The shim should stay below ~0xFF000000.
+- `hw_deinit(keep_display = sld_type)` keeps DC/host1x running when
+  sld_type=1, then calls `minerva_deinit()` (DRAM to 204 MHz).
+  `minerva_prep_boot_l4t()` (800 MHz) runs *before* that. Open question:
+  what clock does DRAM actually run at when BL33 starts? Measure it with
+  a memcpy benchmark in the shim.
+
+Reusing parts of the old shim:
+- `shim/console.h` hard-codes FB_BASE 0x5c000000 at 1080x2400, and
+  `console.c` hard-codes SCALE 3. Wrap these in `#ifndef` so shim-nx can
+  set 720x1280 and SCALE 2 (16 px glyphs, 44 columns). The shim's FB
+  address isn't chosen yet. It must be in the low bank, below the
+  carveouts and away from 0xA8000000-0xAB000000 (e.g. 0xF0000000).
+- `shim/start.S` vectors and `exc_common` can be copied as-is. The Linux
+  Image header and the PSCI CPU_ON stack logic cannot.
+- `shim.c` `exc_handler` (the on-screen panic) is the model for the
+  shim-nx version: replace `reset()` with reboot-to-RCM.
+
+shim-nx design (fixed, code not written yet):
+- Files: `start.S` (header, EL2->EL1, vectors), `shim.ld` (linked at the
+  absolute address **0xAA000000**: the load address is fixed, so no PIC
+  is needed), `t210.h` (MMIO bases and helpers), `display.c`, `i2c.c`
+  (I2C5 + MAX77620), `sdmmc.c`, `main.c`, `build.sh` (clang
+  `--target=aarch64-none-elf`, `ld.lld`, `llvm-objcopy -O binary` ->
+  `out/bl33.bin`).
+- Header: `b _start`, then pad. The u32 at +0x10 must not make
+  `0xAA000000 + val` hit FDT magic: set it to 0.
+- EL2->EL1 (handle entry at EL1 as well, by checking CurrentEL):
+  HCR_EL2 = RW; CNTHCTL_EL2 |= EL1PCEN|EL1PCTEN; CNTVOFF_EL2 = 0;
+  VPIDR/VMPIDR from MIDR/MPIDR; CPTR_EL2 = 0x33FF; SCTLR_EL1 = safe RES1
+  value; SPSR_EL2 = EL1h with DAIF masked; ELR_EL2 = el1 entry; eret.
+  CPACR_EL1.FPEN = 3.
+- Progress stages you can see on screen: (1) fill hekate's FB 0xF5A00000
+  with one colour, which proves the shim runs at all; (2) move window A
+  to the shim's own FB (register list above) and clear it to a second
+  colour, which proves the DC programming works; (3) text console.
+- Volume-down = GPIO port X (index 23), bit 7: IN register
+  0x6000D000 + 0x50C + 0x30 = **0x6000D53C**, active low. hekate already
+  set the buttons up as GPIO inputs. On press: PMC_SCRATCH0 |= 2, then
+  PMC_CNTRL |= 1<<4 (RCM).
+- PSCI: SMC with x0 = 0x84000000 (PSCI_VERSION), print the result.
+- GICv2 test: GICD_CTLR = 1, ISENABLER0 bit 27, IPRIORITYR byte 27 = 0xA0;
+  GICC_PMR = 0xF0, GICC_CTLR = 1; CNTV_TVAL = freq/10, CNTV_CTL = 1;
+  unmask IRQ. Handler: IAR (GICC+0x0C) == 27 -> count++, re-arm, EOIR
+  (GICC+0x10). This assumes ATF already put INTID 27 in Group 1 (NS);
+  if no IRQs arrive, check that first. PPIs bypass the Tegra legacy
+  interrupt controller; SPIs will have to go through it later.
 
 ## Next steps
 

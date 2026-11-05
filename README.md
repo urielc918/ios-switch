@@ -1,0 +1,51 @@
+# ios-switch
+
+XNU (xnu-8796, the iOS 16 kernel) on the **Nintendo Switch** (rev 0 /
+Erista, Tegra X1 / T210), following the approach of
+[dipa-studio/ios-sweet](https://github.com/dipa-studio/ios-sweet) and its
+fork ios-topaz, which run XNU and the iOS 16 userland on Qualcomm phones.
+The base is ios-topaz (ARMv8.0, 4 KiB-page kernel), imported in the first
+commit. The original READMEs and notes are in `docs/upstream/`.
+
+**Status (2026-11-05):** the boot shim runs on the Switch and passes every
+hardware test (EL2 entry, display take-over, PSCI 1.1, GICv2 timer
+interrupts, SD card cold init and reads). The Switch patches for XNU are
+written but haven't been built yet; CI builds them on GitHub's macOS
+runners. Day-to-day notes, decisions and every hardware result:
+[`NOTES.md`](NOTES.md).
+
+## Boot chain
+
+RCM → hekate → hekate's L4T launcher → switchroot's ATF (`bl31.bin`) →
+**`shim-nx`** as `bl33.bin` (EL2 → EL1, display, SD power, XNU loader) →
+XNU, with its payload (kernel, Apple device tree, RAM disk) appended to
+`bl33.bin`.
+
+## Layout
+
+| Path | What |
+|---|---|
+| `shim-nx/` | Switch BL33 shim: diagnostics on screen, XNU loader |
+| `tools/mkadt-nx.py` | Apple device tree for the Switch (iPhone 8 identity) |
+| `tools/mkpayload.py` | Kernel + ADT (+ RAM disk) → payload |
+| `tools/nx-sdcard.sh` | Everything above → SD card layout |
+| `tools/rcm-test/` | Tiny RCM payload: proves code runs without a display |
+| `xnu/patches/0001-0152` | ios-sweet / ios-topaz kernel patches |
+| `xnu/patches/0153` | Xcode 16 `iig` compatibility (`IORPC.kernelContent`) |
+| `xnu/patches/0200-0207` | Switch: machine config, early framebuffer, GICv2, secondary CPUs, Qualcomm drivers off, SD root device, SD console log |
+| `shim/` | the topaz phone shim (shared console code) |
+
+## Building
+
+- Shim: `shim-nx/build.sh` (clang + ld.lld, no GNU cross tools).
+- Kernel: the `xnu` GitHub Actions workflow (`macos-15`), or
+  `tools/build-local.sh` on a Mac. Both build with `TOPAZ_4K=1 NX=1`.
+- SD card: `tools/nx-sdcard.sh OUT KERNEL --init` gives a first test
+  image whose userland is a tiny `init` that runs as PID 1. Copy OUT onto
+  the card's FAT32 partition and pick "iOS NX" in hekate.
+
+## Licences
+
+Repository MIT (from ios-sweet); XNU patches APSL 2.0; see `CREDITS.md`.
+hekate (GPLv2) was used as a reference for register facts only, none of
+its code is copied.

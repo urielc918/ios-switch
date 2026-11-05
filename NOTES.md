@@ -273,6 +273,21 @@ needs no SD/FAT driver to boot XNU.
 - `FB_BASE` in shim-nx is now the shim FB (0xF0000000). Stage 1 sets
   `con_fb` to hekate's FB explicitly.
 
+iPhone 8 firmware: newest = **iOS 16.7.16 (20H392)** for iPhone10,1
+(D20AP), the same build as topaz's iPhone X root, IPSW
+`https://updates.cdn-apple.com/2025FallFCS/fullrestores/122-77002/0281BFC6-38ED-485A-A8BE-8871861174B1/iPhone_4.7_P3_16.7.16_20H392_Restore.ipsw`
+(6.0 GB, "iPhone_4.7_P3", shared by D20AP/D201AP). `tools/remotezip.py`
+fetched `Firmware/all_flash/DeviceTree.d20ap.im4p` (34,302 bytes) into
+`research/ipsw-8/` (git-ignored). Its IM4P payload is **LZFSE** (`bvx2`,
+compression info type 1, 184,572 bytes raw). There's no LZFSE decoder on
+this machine, and building lzfse from GitHub was blocked by the
+permission rules. To finish: install `lzfse` (AUR) or `pip install
+pyliblzfse` with the user's OK, decode the OCTET STRING payload ->
+`research/ipsw-8/d20ap.adt` -> `mkadt-nx.py --product
+research/ipsw-8/d20ap.adt`. Optional for the first boots.
+`mkiosroot.sh` itself is model-independent (it takes the IPSW's
+OS/SystemOS/AppOS dmgs).
+
 `tools/mkadt-nx.py OUT [--dump] [--product D20AP.adt] [--cpus N]`
 (imports helpers from `mkadt.py`):
 - Identity iPhone 8: `D20AP|iPhone10,1|nintendo,icosa|nvidia,tegra210|

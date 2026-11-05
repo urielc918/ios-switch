@@ -428,6 +428,15 @@ cpus=4 to test PSCI + the EL2 drop + SGIs.
   together** skips the check. Our shim-nx never runs this check, but it
   only runs after hekate, so the battery has to be above the threshold
   anyway (or hold both volume keys while hekate starts).
+- 13:28:28 hekate re-sent (from the RCM state the ping left): user saw
+  **no battery icon** after a Power press; disconnect at 13:28:43 was the
+  user unplugging. Caveat: the battery loop polls Power with
+  `btn_wait_timeout_single(0, ...)` every 250 ms, so a short tap can be
+  missed. Retry with the charger connected (a charge-status change turns
+  the screen on by itself and hekate won't power off while charging),
+  Power held ~1 s, then VOL+ and VOL- together. If still black, hekate
+  dies earlier: `hw_init()` (clocks, PMIC, SDRAM) runs before the battery
+  check in `ipl_main`.
 - User suspects a **faulty charger**. Until the Switch can show
   hekate's screen, nothing else can be tested on hardware. Next try: a
   known-good charger and cable, the PC's rear port `usb 1-1`, then

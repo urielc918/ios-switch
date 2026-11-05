@@ -457,6 +457,19 @@ to build. Expected on screen: `*** SWEET userspace: init running as
 PID 1 ***` + heartbeat. Tested with the synthetic kernel (RAM disk
 segment 0x8000 at PA 0x101010000).
 
+Static review of the NX build while CI ran (no compiler available here):
+- Include chains are fine: `SweetCPU.cpp` -> pexpert.h -> pexpert/protos.h
+  -> machine/protos.h -> `pexpert/arm/protos.h` (nx_gic_* prototypes);
+  pe_fiq.c includes protos.h itself under NX_GIC_V2; sleh.c already
+  includes it. `delay()` is usable from BSD code (sweet_ufs.c uses it).
+- No implementation-defined system registers in the topaz/sweet code
+  that the A57 lacks: the only raw `S3_*` access is ACNTVCT_EL0 under
+  `HAS_ACNTVCT` (Apple SoCs only, not SWEET). The A57 is ARMv8.0 like the
+  A53, so topaz 0081 (no PAN, PFZ without CASA, userland LSE/LDAPR
+  emulation) covers it too.
+- Designated initializer for IORPC in IOUserServer.cpp lists
+  `.kernelContent` last, as declared (C++ requires the order).
+
 First NX kernel boot (once CI has built one):
 `tools/mkadt-nx.py nx.adt` ->
 `tools/mkpayload.py KERNEL nx.adt payload.bin --ramdisk ROOT.img

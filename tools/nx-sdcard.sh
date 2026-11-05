@@ -21,7 +21,7 @@ TREE=$(cd "$(dirname "$0")/.." && pwd)
 out=${1:?usage: nx-sdcard.sh OUTDIR KERNEL [options]}
 kernel=${2:?usage: nx-sdcard.sh OUTDIR KERNEL [options]}
 shift 2
-ramdisk= bl31= cpus=1
+ramdisk= bl31= cpus=1 extra=
 cmdline="debug=0xc keepsyms=1 -noprogress"
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -29,10 +29,11 @@ while [ $# -gt 0 ]; do
 	--bl31) bl31=$2; shift 2 ;;
 	--cmdline) cmdline=$2; shift 2 ;;
 	--cpus) cpus=$2; shift 2 ;;
-	--log) cmdline="$cmdline sdlog=1"; shift ;;
+	--log) extra="$extra sdlog=1"; shift ;;
 	*) echo "unknown option $1" >&2; exit 1 ;;
 	esac
 done
+cmdline="$cmdline$extra"
 # Root: the RAM disk if given, else the SD card partition "ios".
 if [ -n "$ramdisk" ]; then
 	cmdline="$cmdline cpus=$cpus rd=md0"

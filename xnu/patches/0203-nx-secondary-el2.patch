@@ -1,0 +1,31 @@
+From f0e12b864d8b4bad9df6b8f7dd2efb838e132f71 Mon Sep 17 00:00:00 2001
+From: x <x@x>
+Date: Thu, 5 Nov 2026 13:18:17 -0800
+Subject: [PATCH 203/204] nx-0203: secondary CPUs: EL2->EL1 drop without
+ ICC_SRE_EL2 (GICv2)
+
+---
+ osfmk/arm64/start.s | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/osfmk/arm64/start.s b/osfmk/arm64/start.s
+index 45fea3e..5ba5a5c 100644
+--- a/osfmk/arm64/start.s
++++ b/osfmk/arm64/start.s
+@@ -306,11 +306,13 @@ LEXT(sweet_secondary_entry)
+ 	mov		x1, #3
+ 	msr		CNTHCTL_EL2, x1
+ 	msr		CNTVOFF_EL2, xzr
++#if !defined(NX_SWITCH)
+ 	/* Permit ICC_SRE_EL1 and GIC CPU interface system-register access. */
+ 	mrs		x1, ICC_SRE_EL2
+ 	orr		x1, x1, #1
+ 	orr		x1, x1, #8
+ 	msr		ICC_SRE_EL2, x1
++#endif	/* NX: GIC-400 has no system-register interface; ICC_SRE_EL2 would trap */
+ 	/* Known Armv8 SCTLR RES1 bits, M/C/I off, little endian. */
+ 	MOV64	x1, 0x30d00800
+ 	msr		SCTLR_EL1, x1
+-- 
+2.55.0
+

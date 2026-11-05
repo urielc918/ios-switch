@@ -1,0 +1,125 @@
+From a73b0a31a751d831ad8eb596e57dceb98010227e Mon Sep 17 00:00:00 2001
+From: x <x@x>
+Date: Thu, 5 Nov 2026 13:10:58 -0800
+Subject: [PATCH 201/204] nx-0201: early bootstrap console framebuffer from
+ SWEET_EARLY_FB_* (NX: 0xF0000000 720x1280)
+
+---
+ osfmk/arm64/arm_vm_init.c | 10 +++++-----
+ osfmk/arm64/start.s       | 19 ++++++++++++-------
+ osfmk/arm64/sweet_early.c | 10 +++++++---
+ 3 files changed, 24 insertions(+), 15 deletions(-)
+
+diff --git a/osfmk/arm64/arm_vm_init.c b/osfmk/arm64/arm_vm_init.c
+index b926886..818dc9e 100644
+--- a/osfmk/arm64/arm_vm_init.c
++++ b/osfmk/arm64/arm_vm_init.c
+@@ -1827,7 +1827,7 @@ init_ptpages(tt_entry_t *tt, vm_map_address_t start, vm_map_address_t end, bool
+ 
+ #if defined(SWEET) && defined(TOPAZ_4K)
+ /*
+- * 4 KiB pages: alias the topaz splash framebuffer (six 2 MB blocks) right
++ * 4 KiB pages: alias the early console framebuffer (SWEET_EARLY_FB_*) right
+  * above low globals, where the KVA has nothing, so the early console
+  * survives the TTBR0 teardown. Slots in use or no L2 table: no alias.
+  */
+@@ -1844,16 +1844,16 @@ sweet_early_map_final(void)
+ 	}
+ 	tt_entry_t *l2 = (tt_entry_t *)phystokv(l1 & ARM_TTE_TABLE_MASK);
+ 	unsigned int first = (unsigned int)((va & ARM_TT_L2_INDEX_MASK) >> ARM_TT_L2_SHIFT);
+-	if (first + 6 > TTE_PGENTRIES) {
++	if (first + SWEET_EARLY_FB_BLOCKS > TTE_PGENTRIES) {
+ 		return;
+ 	}
+-	for (unsigned int i = 0; i < 6; i++) {
++	for (unsigned int i = 0; i < SWEET_EARLY_FB_BLOCKS; i++) {
+ 		if (l2[first + i] != ARM_TTE_EMPTY) {
+ 			return;
+ 		}
+ 	}
+-	for (unsigned int i = 0; i < 6; i++) {
+-		l2[first + i] = (0x5c000000ULL + i * ARM_TT_L2_SIZE) | ARM_TTE_VALID | ARM_TTE_TYPE_BLOCK |
++	for (unsigned int i = 0; i < SWEET_EARLY_FB_BLOCKS; i++) {
++		l2[first + i] = ((uint64_t)SWEET_EARLY_FB_PA + i * ARM_TT_L2_SIZE) | ARM_TTE_VALID | ARM_TTE_TYPE_BLOCK |
+ 		    ARM_TTE_BLOCK_SH(SH_OUTER_MEMORY) |
+ 		    ARM_TTE_BLOCK_ATTRINDX(CACHE_ATTRINDX_WRITECOMB) |
+ 		    ARM_TTE_BLOCK_AF | ARM_TTE_BLOCK_PNX | ARM_TTE_BLOCK_NX;
+diff --git a/osfmk/arm64/start.s b/osfmk/arm64/start.s
+index 9fd1cb9..45fea3e 100644
+--- a/osfmk/arm64/start.s
++++ b/osfmk/arm64/start.s
+@@ -516,13 +516,17 @@ LEXT(start_first_cpu)
+ #if defined(SWEET)
+ 	/* Stage 0: white 64x32 band, no stack or page tables needed. */
+ #if defined(TOPAZ_4K)
+-	MOV64	x0, (0x5c000000 + 2368 * 4320)	/* topaz splash framebuffer */
++	/* topaz splash framebuffer / NX shim framebuffer (SWEET.h): bottom 32 lines */
++	MOV64	x0, (SWEET_EARLY_FB_PA + (SWEET_EARLY_FB_HEIGHT - 32) * SWEET_EARLY_FB_STRIDE)
++	mov		w1, #-1
++	mov		x2, #32
++	MOV64	x4, SWEET_EARLY_FB_STRIDE
+ #else
+ 	MOV64	x0, (0x9c000000 + 2368 * 4320)
+-#endif
+ 	mov		w1, #-1
+ 	mov		x2, #32
+ 	mov		x4, #4320
++#endif
+ Lsweet_mark_row:
+ 	mov		x3, #64
+ 	mov		x5, x0
+@@ -684,19 +688,20 @@ Lkernelcache_base_found:
+ 
+ #if defined(SWEET) && defined(TOPAZ_4K)
+ 	/*
+-	 * topaz splash framebuffer (0x5c000000, 1080x2400x4 = 10 MB) VA=PA as
+-	 * Normal-NC: six 2 MB blocks in an L2 table of its own (L1 index 1;
+-	 * RAM is at 0x140000000), for the early screen console.
++	 * Early console framebuffer (SWEET.h SWEET_EARLY_FB_*: topaz splash
++	 * 0x5c000000, six blocks; NX shim FB 0xF0000000, two blocks) VA=PA as
++	 * Normal-NC 2 MB blocks in an L2 table of its own (its own L1 index:
++	 * topaz RAM is at 0x140000000, NX RAM at 0x100000000).
+ 	 */
+ 	add		x2, x2, PGBYTES
+-	MOV64	x10, 0x5c000000
++	MOV64	x10, SWEET_EARLY_FB_PA
+ 	create_l1_table_entry x10, x1, x2, x11, x12, x13
+ 	MOV64	x11, (ARM_TTE_TYPE_BLOCK | ARM_TTE_VALID | ARM_TTE_BLOCK_SH(SH_OUTER_MEMORY) | ARM_TTE_BLOCK_ATTRINDX(CACHE_ATTRINDX_WRITECOMB) | ARM_TTE_BLOCK_AF | ARM_TTE_BLOCK_PNX | ARM_TTE_BLOCK_NX)
+ 	orr		x11, x11, x10
+ 	and		x12, x10, #(ARM_TT_L2_INDEX_MASK)
+ 	lsr		x12, x12, #(ARM_TT_L2_SHIFT)
+ 	add		x13, x2, x12, lsl #(TTE_SHIFT)
+-	mov		x12, #6
++	mov		x12, #(SWEET_EARLY_FB_BLOCKS)
+ Ltopaz_fb_block:
+ 	str		x11, [x13], #(1 << TTE_SHIFT)
+ 	add		x11, x11, #(ARM_TT_L2_SIZE)
+diff --git a/osfmk/arm64/sweet_early.c b/osfmk/arm64/sweet_early.c
+index 9429767..a91e800 100644
+--- a/osfmk/arm64/sweet_early.c
++++ b/osfmk/arm64/sweet_early.c
+@@ -12,14 +12,18 @@
+ #include <kern/misc_protos.h>
+ 
+ #if defined(TOPAZ_4K)
+-static volatile uint32_t *early_fb = (volatile uint32_t *)(uintptr_t)0x5c000000;  /* topaz splash */
++/* topaz splash or NX shim framebuffer, see SWEET.h */
++static volatile uint32_t *early_fb = (volatile uint32_t *)(uintptr_t)SWEET_EARLY_FB_PA;
++#define EARLY_WIDTH ((unsigned int)SWEET_EARLY_FB_WIDTH)
++#define EARLY_HEIGHT ((unsigned int)SWEET_EARLY_FB_HEIGHT)
++#define EARLY_STRIDE ((unsigned int)SWEET_EARLY_FB_STRIDE / 4)
+ #else
+ static volatile uint32_t *early_fb = (volatile uint32_t *)(uintptr_t)0x9c000000;
+-#endif
+-#define EARLY_FB early_fb
+ #define EARLY_WIDTH 1080u
+ #define EARLY_HEIGHT 2400u
+ #define EARLY_STRIDE (4320u / 4)
++#endif
++#define EARLY_FB early_fb
+ #define EARLY_SCALE 2u
+ #define EARLY_CELL_W (8u * EARLY_SCALE)
+ #define EARLY_CELL_H (16u * EARLY_SCALE)
+-- 
+2.55.0
+

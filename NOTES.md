@@ -327,6 +327,90 @@ HEAD), and so what the NX patches have to deal with:
   `sweet_i2c1_init` and `sweet_cpufreq_max` (Qualcomm). They need an NX
   gate.
 
+## XNU NX patches (2026-11-05, not built yet)
+
+`xnu/patches/0200-0204-nx-*.patch`, made on branch `nx` of
+`work/xnu-src/xnu` (`master` = pristine + topaz series, unchanged).
+Checked: all five apply in order with `git apply --check` on a `master`
+worktree, and the result is identical to `nx`. **Not compiled**: XNU only
+builds on macOS (CI or `tools/build-local.sh`). The GICv2 C block was
+compiled on its own with stubs (`clang -Weverything`, no warnings).
+Regenerate after editing the branch with
+`git format-patch --start-number 200 master..nx` (then rename to the
+names below).
+
+Build switch: **`TOPAZ_4K=1 NX=1`** in the make environment ->
+`-DTOPAZ_4K=1 -DNX_SWITCH=1` (`makedefs/MakeInc.def`). The CI workflow
+(`env:`) and `tools/build-local.sh` now export both. Before this,
+neither set TOPAZ_4K, so CI built the 16K topaz kernel, which the A57
+can't run. SWEET.h `#error`s if NX is set without TOPAZ_4K. `-mcpu` stays
+cortex-a53 (ARMv8.0, fine on the A57).
+
+- **0200 machine config**: SWEET.h under NX_SWITCH: no `__ARM_AMP__`
+  (one A57 cluster; `MAX_CPU_CLUSTERS` 1 in board_config.h),
+  `NX_GIC_V2` instead of `HAS_GIC_V3`, `SWEET_VTIMER_INTID` 27, GICv2
+  register offsets (`GICD_V2_*`, `GICC_V2_*`), and
+  `SWEET_EARLY_FB_PA/WIDTH/HEIGHT/STRIDE/BLOCKS` (NX: 0xF0000000,
+  720x1280, 2880, 2 blocks; topaz values kept for the 4K topaz build).
+- **0201 early framebuffer**: start.s (white band on the bottom 32 lines,
+  VA=PA 2 MB-block mapping in its own L2 table: FB in L1 slot 3, RAM
+  in slot 4), sweet_early.c and arm_vm_init.c (`sweet_early_map_final`
+  alias) use the SWEET_EARLY_FB_* constants instead of 0x5c000000/1080/
+  2400/4320/6.
+- **0202 GICv2**: pe_fiq.c `#if NX_GIC_V2` `pe_init_fiq`: maps GICD/GICC
+  from `/arm-io/gic` reg (+ soc base), reads virtual-timer-intid, sets
+  GICD_CTLR bit 0 once. On every CPU (banked): SGI/PPI priorities 0xA0,
+  enables vtimer + SWEET_IPI_SGI (1), GICC_PMR 0xF0, BPR 0, GICC_CTLR 1.
+  `nx_gic_ack/eoi/send_sgi` (protos.h). sleh.c `sleh_irq` NX branch: IAR
+  from GICC (intid = iar & 0x3FF), EOIR with the full IAR. SweetCPU
+  `signalCPU`: GICD_SGIR = (1 << Aff0) << 16 | SGI. **Assumption**: the
+  GICv2 CPU interface number = MPIDR Aff0 on T210 (could be checked
+  per CPU by reading the banked GICD_ITARGETSR0).
+- **0203 secondary EL2**: `sweet_secondary_entry` already drops EL2->EL1
+  (topaz needed it too); under NX it skips the `ICC_SRE_EL2` write. The
+  GIC-400 has no system-register interface, so the A57 would most likely
+  trap there. PSCI CPU_ON goes through `smc #0` (fine for ATF).
+- **0204 gate Qualcomm**: KernelConfigTables: SweetCPU IONameMatch
+  `ARM,v8` under NX. AppleCLCD::start (SweetFramebuffer.cpp) under NX
+  only runs `sweet_amfi_service_init` + `sweet_busy_init` and returns
+  false. The rest is `#else`'d out (not just after a `return`, because of
+  -Weverything -Werror's unreachable-code warning); no static helper or
+  variable becomes unused. SweetBattery::start under NX: `fReal = false`
+  (no cpufreq / i2c1), and `poll()` then never touches SPMI or I2C.
+- Checked, no gating needed for the first boot: sweet_ufs/keys/touch/usb/
+  log only start via `rd=ufsroot0`; topaz modem/audio/adreno, redwood
+  wlan/gpu only from AppleCLCD; SweetHIDButtons/Touch don't touch MMIO.
+  `sweet_amfi`, HFS, mockfs, AMFI policy are software.
+
+First NX kernel boot (once CI has built one):
+`tools/mkadt-nx.py nx.adt` ->
+`tools/mkpayload.py KERNEL nx.adt payload.bin --ramdisk ROOT.img
+--cmdline "debug=0xc cpus=1 keepsyms=1 -noprogress rd=md0"` ->
+`shim-nx/build.sh payload.bin` -> SD `switchroot/ios/bl33.bin`. The
+first goal is the text console on the panel. Start with cpus=1, then
+cpus=4 to test PSCI + the EL2 drop + SGIs.
+
+## Hardware log (2026-11-05)
+
+- RCM works and is reachable: `0955:7321` "APX", device id
+  `8085050500000018c705326401101062` (Erista).
+- hekate 6.5.4 (`work/rcm/hekate_ctcaer_6.5.4.bin`, SHA-256
+  95f6e933...8c24, **identical to the official GitHub release asset**)
+  was sent 3 times with fusee-nano: "Sent 0x2d000 bytes, Smashed the
+  stack" each time, but **the screen stayed black**, including once
+  with the SD card out (it should show hekate's SD error screen). The
+  Switch dropped off USB on its own 12 s to 70 s after each send, and
+  once 5 s after entering RCM without any send.
+- Around 13:14-13:15 a high-speed device on another PC port (`usb 3-3`)
+  failed to enumerate (descriptor read -71/-110, address -62), likely
+  the Switch on a bad cable/port. Another device on `usb 3-4` kept
+  failing to enumerate the whole time (not the Switch).
+- User suspects a **faulty charger**. Until the Switch can show
+  hekate's screen, nothing else can be tested on hardware. Next try: a
+  known-good charger and cable, the PC's rear port `usb 1-1`, then
+  re-send (the watcher one-liner in this session's history sends the
+  moment `lsusb -d 0955:7321` matches).
+
 ## Next steps
 
 1. **Run shim-nx on hardware**, then fix whatever stage fails. After
@@ -335,18 +419,21 @@ HEAD), and so what the NX patches have to deal with:
    itself through PSCI CPU_ON, so the EL2 drop belongs in XNU (step 3).
    SD in the shim is diagnostics only now; boot uses the payload in
    bl33.bin.
-2. **`tools/mkadt-nx.py`** from `tools/mkadt.py`: iPhone 8 identity,
-   4x A57 (`IONameMatch` for SweetCPU must change from `qcom,kryo470`),
-   GICv2 regs, memory 0x1_00000000 + 2 GiB, `/nx-sdmmc` node.
-3. **XNU patches `xnu/patches/02xx-nx-*`**: machine flags; GICv2;
-   EL2 drop in `sweet_secondary_entry` (`osfmk/arm64/start.s`);
-   framebuffer geometry (hard-coded 1080x2400 / 0x9c000000 in `start.s`,
-   `arm_vm_init.c`, `sweet_early.c`, `SweetFramebuffer.cpp`, `SweetHID.cpp`);
-   gate out the Qualcomm drivers in `iokit/KernelConfigTables.cpp`
-   (SweetHIDButtons/Touch/Battery match on IOResources and would touch
-   Qualcomm MMIO); SD block device modelled on `bsd/dev/sweet_ufs.c`
-   (bdevsw/cdevsw, `rd=` root name, persistent log ring at the end of the
-   partition: readable by putting the SD card in a PC).
+2. ~~`tools/mkadt-nx.py`~~ done (Session 3). Optional: `--product` with
+   the real D20AP tree once the iPhone 8 IPSW DeviceTree is extracted.
+3. **XNU patches**: 0200-0204 done (machine flags, early FB, GICv2,
+   secondary EL2, Qualcomm gating; see "XNU NX patches"). Next: get a
+   CI build (needs the user's OK to push), fix compile errors. Still
+   open:
+   - SD block device modelled on `bsd/dev/sweet_ufs.c` (bdevsw/cdevsw,
+     `rd=` root name, `/nx-sdmmc` from the ADT, persistent log ring at the
+     end of the partition, readable by putting the SD card in a PC).
+     Reuse the register sequence from `shim-nx/sdmmc.c` once it's proven
+     on hardware.
+   - A Tegra DC framebuffer driver for AppleCLCD (IOMobileFramebuffer for
+     backboardd), replacing the NX early return in patch 0204.
+   - SweetHID.cpp still assumes 1080x2400 (only matters once there is
+     touch input).
 4. Later: touch (STM FTS over I2C), Joy-Con rails, GPU.
 
 Licensing: repo MIT (from ios-sweet), XNU patches APSL 2.0. hekate is

@@ -1,0 +1,127 @@
+From 745bd63d6bac3e8441864a0faac40e87add067bd Mon Sep 17 00:00:00 2001
+From: x <x@x>
+Date: Thu, 5 Nov 2026 13:10:47 -0800
+Subject: [PATCH 200/204] nx-0200: NX=1 machine config (Switch, Tegra X1): one
+ A57 cluster, GICv2, vtimer 27, early FB constants
+
+---
+ makedefs/MakeInc.def                 |  3 +-
+ pexpert/pexpert/arm64/SWEET.h        | 51 +++++++++++++++++++++++++++-
+ pexpert/pexpert/arm64/board_config.h |  2 +-
+ 3 files changed, 53 insertions(+), 3 deletions(-)
+
+diff --git a/makedefs/MakeInc.def b/makedefs/MakeInc.def
+index 943a1a5..35ff4ee 100644
+--- a/makedefs/MakeInc.def
++++ b/makedefs/MakeInc.def
+@@ -63,7 +63,8 @@ MACHINE_FLAGS_ARM64_VMAPPLE = -DARM64_BOARD_CONFIG_VMAPPLE              -march=a
+ MACHINE_FLAGS_ARM64_BCM2837 = -DARM64_BOARD_CONFIG_BCM2837
+ # topaz: Cortex-A53/A73 are ARMv8.0 (no LSE atomics, RCpc, PAN or FP16). An explicit
+ # -mcpu: -arch arm64 otherwise keeps clang's apple-m1 default and its LSE/RCpc features
+-MACHINE_FLAGS_ARM64_SWEET = -DARM64_BOARD_CONFIG_SWEET                -mcpu=cortex-a53 $(if $(filter 1,$(TOPAZ_4K)),-DTOPAZ_4K=1)
++# NX=1 (with TOPAZ_4K=1): Nintendo Switch, Tegra X1 (4x Cortex-A57, GIC-400)
++MACHINE_FLAGS_ARM64_SWEET = -DARM64_BOARD_CONFIG_SWEET                -mcpu=cortex-a53 $(if $(filter 1,$(TOPAZ_4K)),-DTOPAZ_4K=1) $(if $(filter 1,$(NX)),-DNX_SWITCH=1)
+ 
+ 
+ #
+diff --git a/pexpert/pexpert/arm64/SWEET.h b/pexpert/pexpert/arm64/SWEET.h
+index cfeb976..ac13146 100644
+--- a/pexpert/pexpert/arm64/SWEET.h
++++ b/pexpert/pexpert/arm64/SWEET.h
+@@ -35,9 +35,13 @@
+ #define __ARM_ENABLE_SWAP__       1
+ #define __ARM_V8_CRYPTO_EXTENSIONS__ 1
+ /* topaz: Cortex-A53/A73 have no PAN (ARMv8.1); MSR PAN is undefined there */
++#if defined(NX_SWITCH) && !defined(TOPAZ_4K)
++#error "NX=1 needs TOPAZ_4K=1: the Cortex-A57 has no 16 KiB granule"
++#endif
++
+ #if !defined(TOPAZ_4K)
+ #define __ARM_16K_PG__            1
+-#else
++#elif !defined(NX_SWITCH)
+ /*
+  * 4 KiB pages run all eight topaz cores: gold A73 = P cluster (boot, pset0),
+  * silver A53 = E cluster (ADT cluster-type). The Edge scheduler then keeps
+@@ -46,7 +50,19 @@
+ #define __ARM_AMP__               1
+ #endif
+ 
++#if defined(NX_SWITCH)
++/*
++ * Nintendo Switch (Tegra X1 / T210, Erista): four Cortex-A57 (ARMv8.0) in
++ * one SMP cluster, GIC-400 (GICv2: memory-mapped distributor and CPU
++ * interface, no ICC_* system registers). The ADT /arm-io/gic reg holds
++ * <GICD size GICC size>. The architected timer PPIs have the usual numbers:
++ * CNTV is INTID 27. hekate + ATF enter the kernel (and PSCI CPU_ON
++ * secondaries) at EL2.
++ */
++#define NX_GIC_V2                 1
++#else
+ #define HAS_GIC_V3                1
++#endif
+ 
+ #ifndef ASSEMBLER
+ #define PLATFORM_PANIC_LOG_DISABLED
+@@ -57,7 +73,11 @@
+  * virt, hyp) instead of the usual 13/14/11/10: the virtual timer XNU uses
+  * (CNTV) is INTID 16 + 3 = 19.
+  */
++#if defined(NX_SWITCH)
++#define SWEET_VTIMER_INTID        27
++#else
+ #define SWEET_VTIMER_INTID        19
++#endif
+ #define SWEET_IPI_SGI             1       // SGI used for cross-CPU signals
+ 
+ #define GIC_SPURIOUS_IRQ          1023    // IRQ no. for GIC spurious interrupt
+@@ -90,4 +110,33 @@
+ #define ICC_SRE_SRE                             0x1
+ /* End of GICv3 register definitions */
+ 
++/* GICv2 (GIC-400) register offsets, NX_GIC_V2; see Arm IHI 0048B */
++#define GICD_V2_CTLR              0x000
++#define GICD_V2_ISENABLER0        0x100
++#define GICD_V2_IPRIORITYR0       0x400
++#define GICD_V2_SGIR              0xF00
++#define GICC_V2_CTLR              0x00
++#define GICC_V2_PMR               0x04
++#define GICC_V2_BPR               0x08
++#define GICC_V2_IAR               0x0C
++#define GICC_V2_EOIR              0x10
++
++/*
++ * Early bootstrap console framebuffer (start.s, sweet_early.c,
++ * arm_vm_init.c), 4 KiB-page builds: mapped VA=PA as 2 MB blocks.
++ */
++#if defined(NX_SWITCH)
++#define SWEET_EARLY_FB_PA         0xF0000000      /* shim-nx framebuffer, DC window A */
++#define SWEET_EARLY_FB_WIDTH      720
++#define SWEET_EARLY_FB_HEIGHT     1280
++#define SWEET_EARLY_FB_STRIDE     2880            /* bytes */
++#define SWEET_EARLY_FB_BLOCKS     2               /* 2 MB blocks: 3.5 MB */
++#else
++#define SWEET_EARLY_FB_PA         0x5c000000      /* topaz splash */
++#define SWEET_EARLY_FB_WIDTH      1080
++#define SWEET_EARLY_FB_HEIGHT     2400
++#define SWEET_EARLY_FB_STRIDE     4320
++#define SWEET_EARLY_FB_BLOCKS     6
++#endif
++
+ #endif /* ! _PEXPERT_ARM64_SWEET_H */
+diff --git a/pexpert/pexpert/arm64/board_config.h b/pexpert/pexpert/arm64/board_config.h
+index 0d5f7cc..c0bf656 100644
+--- a/pexpert/pexpert/arm64/board_config.h
++++ b/pexpert/pexpert/arm64/board_config.h
+@@ -102,7 +102,7 @@
+ 
+ #define MAX_L2_CLINE                   6
+ #define MAX_CPUS                       8
+-#if defined(TOPAZ_4K)
++#if defined(TOPAZ_4K) && !defined(NX_SWITCH)
+ #define MAX_CPU_CLUSTERS               2
+ #else
+ #define MAX_CPU_CLUSTERS               1
+-- 
+2.55.0
+

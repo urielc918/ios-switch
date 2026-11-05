@@ -1,0 +1,83 @@
+From dbc3b1d0548692efc444f00ddb427590f7e68081 Mon Sep 17 00:00:00 2001
+From: x <x@x>
+Date: Thu, 5 Nov 2026 13:19:30 -0800
+Subject: [PATCH 204/204] nx-0204: gate Qualcomm/topaz drivers: SweetCPU
+ matches ARM,v8; AppleCLCD keeps AMFI only; SweetBattery static
+
+---
+ iokit/Kernel/arm/SweetBattery.cpp     |  5 +++++
+ iokit/Kernel/arm/SweetFramebuffer.cpp | 14 ++++++++++++++
+ iokit/KernelConfigTables.cpp          |  4 ++++
+ 3 files changed, 23 insertions(+)
+
+diff --git a/iokit/Kernel/arm/SweetBattery.cpp b/iokit/Kernel/arm/SweetBattery.cpp
+index ed9a0c7..5442d7e 100644
+--- a/iokit/Kernel/arm/SweetBattery.cpp
++++ b/iokit/Kernel/arm/SweetBattery.cpp
+@@ -435,10 +435,15 @@ SweetBattery::start(IOService *provider)
+ 	if (!IOPMPowerSource::start(provider)) {
+ 		return false;
+ 	}
++#if defined(NX_SWITCH)
++	/* Nintendo Switch: no Qualcomm CPU clock or fuel gauge; static fallback. */
++	fReal = false;
++#else
+ 	(void)sweet_cpufreq_max();
+ 	int real = 1;   /* topaz: real gauge by default; sweetbattery=0 for the static fallback */
+ 	(void)PE_parse_boot_argn("sweetbattery", &real, sizeof(real));
+ 	fReal = real == 1 && sweet_i2c1_init() == 0;
++#endif
+ 	/* Publish a complete source BEFORE registerService wakes powerd. */
+ 	poll();
+ 	if (fReal) {
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 1d3ee17..937963d 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -312,6 +312,19 @@ AppleCLCD::start(IOService *provider)
+ 	if (!IOService::start(provider)) {
+ 		return false;
+ 	}
++#if defined(NX_SWITCH)
++	/*
++	 * Nintendo Switch: the rest of this driver programs the Qualcomm MDP/DSI
++	 * and starts topaz's modem, audio and Adreno drivers. Keep only the
++	 * services userland needs (AMFI); the kernel text console stays on the
++	 * shim framebuffer (/sweet-fbcon). A Tegra DC driver comes later.
++	 */
++	sweet_amfi_service_init();
++	sweet_busy_init();
++	(void)video;
++	IOLog("NX FB: no display driver yet (text console only)\n");
++	return false;
++#else
+ 	topaz_modem_init();
+ 	topaz_audio_init();
+ 	sweet_amfi_service_init();
+@@ -475,6 +488,7 @@ AppleCLCD::start(IOService *provider)
+ 	IOLog("SWEET FB: AppleCLCD %ux%u stride %u at 0x%llx, default surface %u, presented as %ux%u\n",
+ 	    fWidth, fHeight, fRowBytes, fPhys, fSurface->id, fLogicalW, fLogicalH);
+ 	return true;
++#endif /* NX_SWITCH */
+ }
+ 
+ void
+diff --git a/iokit/KernelConfigTables.cpp b/iokit/KernelConfigTables.cpp
+index 92f3e26..afb2030 100644
+--- a/iokit/KernelConfigTables.cpp
++++ b/iokit/KernelConfigTables.cpp
+@@ -44,7 +44,11 @@ const char * gIOKernelConfigTables =
+     "   {"
+     "     'IOClass'         = SweetCPU;"
+     "     'IOProviderClass' = IOPlatformDevice;"
++#if defined(NX_SWITCH)
++    "     'IONameMatch'     = 'ARM,v8';"      /* tools/mkadt-nx.py: arm,cortex-a57 + ARM,v8 */
++#else
+     "     'IONameMatch'     = 'qcom,kryo470';"
++#endif
+     "     'IOProbeScore'    = 10000:32;"
+     "   },"
+     "   {"
+-- 
+2.55.0
+

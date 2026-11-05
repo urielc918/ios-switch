@@ -504,8 +504,14 @@ cpus=4 to test PSCI + the EL2 drop + SGIs.
   text console visible. `ENTRY el=00000002 x0=00000000` (ATF enters BL33
   at EL2, x0 = 0), `CPU midr=411FD071` (Cortex-A57 r1p1)
   `mpidr=80000000` (core 0, Aff0 0), `el=00000001` (EL2->EL1 drop works),
-  `frq=0124F800` (CNTFRQ = 19.2 MHz = ADT timebase). Rest of the screen:
-  pending.
+  `frq=0124F800` (CNTFRQ = 19.2 MHz = ADT timebase).
+  `DC addr 40000000 start=F5A00000 depth=0000000C size=050002D0
+  stride=05A00B40 kind=0`: window A exactly as predicted from hekate's
+  `_di_winA_pitch` (enabled, B8G8R8A8, 1280x720 lines x px, pitch 2880,
+  UV stride 1440, pitch-linear), so the take-over only rewrote START_ADDR
+  and window A now scans out 0xF0000000 (blue screen seen). `ENV`
+  parsed: `l4t=1`, `boot_prefixes=/switchroot/ios/`, `autoboot=2`,
+  `autoboot_list=1`, `loader_rev=7`. PSCI/GIC/SD lines: pending.
 - **The user's SD card** (461 GB, 10 partitions): `sdc1` FAT32 "SWITCH SD"
   (atmosphere, emuMMC, Nintendo, hekate 6.5.4 already installed:
   `update.bin` identical to the release), `sdc2` ext4 "SWR-NOB" = switchroot

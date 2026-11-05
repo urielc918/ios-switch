@@ -530,6 +530,10 @@ cpus=4 to test PSCI + the EL2 drop + SGIs.
   - Order check now done like CI: `master~1` (pristine) + every
     `xnu/patches/*.patch` in sorted order: only 0031/0041 skip locally
     (no staged HFS sources); 0153 and 0960-0967 apply.
+- Run 42123957935 (renumbered series), attempt 1: **"The job was not
+  acquired by Runner of type hosted even after multiple attempts"**
+  (15 min queue, no minutes used; GitHub also warns about macOS arm64
+  capacity). Re-ran with `gh run rerun`.
 - The CI ccache wrapper now bypasses ccache for `.s` inputs (as
   `tools/build-local.sh` already did): assembler files include the
   generated `assym.s`, which ccache doesn't hash, so stale struct offsets

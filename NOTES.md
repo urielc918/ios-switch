@@ -344,7 +344,7 @@ HEAD), and so what the NX patches have to deal with:
 
 ## XNU NX patches (2026-11-05, not built yet)
 
-`xnu/patches/0200-0207-nx-*.patch`, made on branch `nx` of
+`xnu/patches/0960-0967-nx-*.patch` (first numbered 0200-0207, see "CI" for why they moved), made on branch `nx` of
 `work/xnu-src/xnu` (`master` = pristine + topaz series, unchanged).
 Checked: all eight apply in order with `git apply --check` on a `master`
 worktree, and the result is identical to `nx`. **Not compiled**: XNU only
@@ -361,33 +361,33 @@ neither set TOPAZ_4K, so CI built the 16K topaz kernel, which the A57
 can't run. SWEET.h `#error`s if NX is set without TOPAZ_4K. `-mcpu` stays
 cortex-a53 (ARMv8.0, fine on the A57).
 
-- **0200 machine config**: SWEET.h under NX_SWITCH: no `__ARM_AMP__`
+- **0960 machine config**: SWEET.h under NX_SWITCH: no `__ARM_AMP__`
   (one A57 cluster; `MAX_CPU_CLUSTERS` 1 in board_config.h),
   `NX_GIC_V2` instead of `HAS_GIC_V3`, `SWEET_VTIMER_INTID` 27, GICv2
   register offsets (`GICD_V2_*`, `GICC_V2_*`), and
   `SWEET_EARLY_FB_PA/WIDTH/HEIGHT/STRIDE/BLOCKS` (NX: 0xF0000000,
   720x1280, 2880, 2 blocks; topaz values kept for the 4K topaz build).
-- **0201 early framebuffer**: start.s (white band on the bottom 32 lines,
+- **0961 early framebuffer**: start.s (white band on the bottom 32 lines,
   VA=PA 2 MB-block mapping in its own L2 table: FB in L1 slot 3, RAM
   in slot 4), sweet_early.c and arm_vm_init.c (`sweet_early_map_final`
   alias) use the SWEET_EARLY_FB_* constants instead of 0x5c000000/1080/
   2400/4320/6.
-- **0202 GICv2**: pe_fiq.c `#if NX_GIC_V2` `pe_init_fiq`: maps GICD/GICC
+- **0962 GICv2**: pe_fiq.c `#if NX_GIC_V2` `pe_init_fiq`: maps GICD/GICC
   from `/arm-io/gic` reg (+ soc base), reads virtual-timer-intid, sets
   GICD_CTLR bit 0 once. On every CPU (banked): SGI/PPI priorities 0xA0,
   enables vtimer + SWEET_IPI_SGI (1), GICC_PMR 0xF0, BPR 0, GICC_CTLR 1.
   `nx_gic_ack/eoi/send_sgi` (protos.h). sleh.c `sleh_irq` NX branch: IAR
   from GICC (intid = iar & 0x3FF), EOIR with the full IAR. SweetCPU
-  `signalCPU`: GICD_SGIR = (1 << Aff0) << 16 | SGI. 0206 replaces the
+  `signalCPU`: GICD_SGIR = (1 << Aff0) << 16 | SGI. 0966 replaces the
   assumption "GIC interface number = Aff0": each core records its own
   mask from the banked GICD_ITARGETSR0 in `pe_init_fiq` (logged as
   `NX GIC: CPU Aff0 N has GIC interface mask 0x..`), and
   `nx_gic_send_sgi(aff0, sgi)` uses it, falling back to 1 << Aff0.
-- **0203 secondary EL2**: `sweet_secondary_entry` already drops EL2->EL1
+- **0963 secondary EL2**: `sweet_secondary_entry` already drops EL2->EL1
   (topaz needed it too); under NX it skips the `ICC_SRE_EL2` write. The
   GIC-400 has no system-register interface, so the A57 would most likely
   trap there. PSCI CPU_ON goes through `smc #0` (fine for ATF).
-- **0204 gate Qualcomm**: KernelConfigTables: SweetCPU IONameMatch
+- **0964 gate Qualcomm**: KernelConfigTables: SweetCPU IONameMatch
   `ARM,v8` under NX. AppleCLCD::start (SweetFramebuffer.cpp) under NX
   only runs `sweet_amfi_service_init` + `sweet_busy_init` and returns
   false. The rest is `#else`'d out (not just after a `return`, because of
@@ -399,7 +399,7 @@ cortex-a53 (ARMv8.0, fine on the A57).
   wlan/gpu only from AppleCLCD; SweetHIDButtons/Touch don't touch MMIO.
   `sweet_amfi`, HFS, mockfs, AMFI policy are software.
 
-- **0205 SD root** (`bsd/dev/nx_sdmmc.c`, + `bsd/conf/files`, +
+- **0965 SD root** (`bsd/dev/nx_sdmmc.c`, + `bsd/conf/files`, +
   IOKitBSDInit `rd=sdroot0` -> `nx_sdmmc_rootdev()`, which panics if
   unavailable like the UFS path). Division of work: **shim-nx powers
   SDMMC1** (pads, LDO2, PMC, CAR clocks: `test_sd()` in main.c, which must
@@ -419,7 +419,7 @@ cortex-a53 (ARMv8.0, fine on the A57).
   stub headers (`clang -Weverything`); the remaining warnings were stub
   artifacts (uint64_t is unsigned long there, the lock group macro).
   Not done yet: high-speed mode (CMD6, 50 MHz).
-- **0207 SD console log** (boot-arg `sdlog=1`, `sdlogpart=` default
+- **0967 SD console log** (boot-arg `sdlog=1`, `sdlogpart=` default
   `ioslog`, `sdlogsecs=` default 2): a thread copies the console ring
   every SWEET kernel keeps (`sweet_log_copy`/`sweet_log_position` in
   sweet_ufs.c, fed by `_cnputs`) into a 4 MiB shadow with the on-card
@@ -498,6 +498,32 @@ cpus=4 to test PSCI + the EL2 drop + SGIs.
   `IOUserServerUEXTTrap`), as upstream does. Workflow `runs-on: macos-15`
   (it already selects the oldest installed Xcode). Private repo: macOS
   minutes count 10x.
+- **Run 42122592548 (macos-15, Xcode 16), failed after 5 min**
+  (`tools/ci-check.sh` summary, full log in `logs/`): 212 patches
+  applied. Skipped: **0205/0207** (NX SD), plus blacktop's own
+  iobuffermemd_monterey/skywalk_sonoma/syntax_checker_sonoma/TrustCache
+  (expected; their ventura/kas_info/machine_routines variants applied).
+  0031 and 0041 DID apply in CI. One compile error, twice:
+  `IOUserServer.cpp:3212/3361: no member 'kernelContent' in 'IORPC'`.
+  - Cause 1: **patch order**. blacktop's build.sh applies
+    `dxb/patches/*.patch` in glob order, and topaz's series includes
+    **0900-0950** (HackiOS-derived), which sort after 02xx. The NX patches
+    were made on a tree with 09xx already applied, and some 09xx touch
+    `bsd/conf/files` and `IOKitBSDInit.cpp`. **Renumbered: NX patches are
+    now 0960-0967** (0200->0960 ... 0207->0967). Rule: new patches must
+    sort after every patch they were made on top of.
+  - Cause 2: the kernel includes **`iokit/IOKit/IORPC.h`**, a separate
+    regular file (same content) next to `iokit/DriverKit/IORPC.h`. 0153
+    now patches both.
+  - New local baseline that matches CI exactly: `work/xnu-ci` (git, tag
+    `ci-base`) = the run's `xnu-buildtree` artifact source with 0153 and
+    the NX patches reverse-applied. It differs from `work/xnu-src` master
+    only in sources staged by the `.sh` scripts (pthread, bearssl, HFS)
+    and a few files the build edits (MakeInc.def/.cmd, vfs_subr.c,
+    make_symbol_aliasing.sh, Libsyscall.xcconfig).
+  - Order check now done like CI: `master~1` (pristine) + every
+    `xnu/patches/*.patch` in sorted order: only 0031/0041 skip locally
+    (no staged HFS sources); 0153 and 0960-0967 apply.
 - The CI ccache wrapper now bypasses ccache for `.s` inputs (as
   `tools/build-local.sh` already did): assembler files include the
   generated `assym.s`, which ccache doesn't hash, so stale struct offsets
@@ -578,7 +604,7 @@ cpus=4 to test PSCI + the EL2 drop + SGIs.
   `PSCI ver=00010001` (PSCI 1.1). **GICv2 + vtimer work**: `VTIMER
   ticks=0000000A us=000F4258` (10 IRQs in 1,000,024 us), spur 0, other 0,
   `GIC OK`: INTID 27 arrives as a Group 1 IRQ at EL1 through the MMIO
-  GIC-400 CPU interface, which is what xnu patch 0202 assumes. **SD cold
+  GIC-400 CPU interface, which is what xnu patch 0962 assumes. **SD cold
   init works**: `SD ret=0 stage=0x64`, `i2cfix=0` (I2C5 still clocked
   after hekate), `ldo2=0xF2` (LDO2 3.3 V, normal mode), `calto=0`
   (autocal finished), `calsts=12181518`, `ocr=C0FF8000` (powered up,
@@ -590,7 +616,7 @@ cpus=4 to test PSCI + the EL2 drop + SGIs.
   esz=0x80` (10 entries = the 10 partitions Linux sees). Partition names
   not reported.
   **Result: every shim-nx stage passed on the first hardware run.** The
-  hardware facts that xnu patches 0200-0207 rely on are now confirmed on
+  hardware facts that xnu patches 0960-0967 rely on are now confirmed on
   the device, not just read from hekate's source.
 - **The user's SD card** (461 GB, 10 partitions): `sdc1` FAT32 "SWITCH SD"
   (atmosphere, emuMMC, Nintendo, hekate 6.5.4 already installed:
@@ -625,14 +651,14 @@ cpus=4 to test PSCI + the EL2 drop + SGIs.
    bl33.bin.
 2. ~~`tools/mkadt-nx.py`~~ done (Session 3). Optional: `--product` with
    the real D20AP tree once the iPhone 8 IPSW DeviceTree is extracted.
-3. **XNU patches**: 0200-0204 done (machine flags, early FB, GICv2,
+3. **XNU patches**: 0960-0964 done (machine flags, early FB, GICv2,
    secondary EL2, Qualcomm gating; see "XNU NX patches"). Next: get a
    CI build (needs the user's OK to push), fix compile errors. Still
    open:
-   - ~~SD block device~~ done (0205), ~~SD console log~~ done (0207).
+   - ~~SD block device~~ done (0965), ~~SD console log~~ done (0967).
      Still to add: high-speed mode.
    - A Tegra DC framebuffer driver for AppleCLCD (IOMobileFramebuffer for
-     backboardd), replacing the NX early return in patch 0204.
+     backboardd), replacing the NX early return in patch 0964.
    - SweetHID.cpp still assumes 1080x2400 (only matters once there is
      touch input).
 4. Later: touch (STM FTS over I2C), Joy-Con rails, GPU.

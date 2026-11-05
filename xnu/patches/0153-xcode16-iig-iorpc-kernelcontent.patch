@@ -1,13 +1,14 @@
-From 4f49cd7bd15f3fb2727d34f32c3a5a9a3451b24b Mon Sep 17 00:00:00 2001
+From 707fdbe86101b9f665a52670cc369f94f2393e5a Mon Sep 17 00:00:00 2001
 From: x <x@x>
 Date: Thu, 5 Nov 2026 14:28:50 -0800
-Subject: [PATCH] 0153: IORPC.kernelContent for Xcode 16 iig (backport; set
+Subject: [PATCH 9/9] 0153: IORPC.kernelContent for Xcode 16 iig (backport; set
  where IOUserServer builds an IORPC)
 
 ---
- iokit/DriverKit/IORPC.h       | 9 +++++++++
- iokit/Kernel/IOUserServer.cpp | 3 ++-
- 2 files changed, 11 insertions(+), 1 deletion(-)
+ iokit/DriverKit/IORPC.h       |  9 +++++++++
+ iokit/IOKit/IORPC.h           | 10 ++++++++++
+ iokit/Kernel/IOUserServer.cpp |  3 ++-
+ 3 files changed, 21 insertions(+), 1 deletion(-)
 
 diff --git a/iokit/DriverKit/IORPC.h b/iokit/DriverKit/IORPC.h
 index 3ded78c..ae2f88d 100644
@@ -23,6 +24,27 @@ index 3ded78c..ae2f88d 100644
 +	 * generates kernel dispatch code that reads the decoded message from
 +	 * here. GitHub's runners no longer have Xcode 15 (macOS 14 images
 +	 * retired 2026-11-02). IOUserServer fills it wherever it builds an IORPC.
++	 */
++	IORPCMessage     * kernelContent;
++#endif /* KERNEL */
+ };
+ typedef struct IORPC IORPC;
+ 
+diff --git a/iokit/IOKit/IORPC.h b/iokit/IOKit/IORPC.h
+index 3ded78c..d1292bb 100644
+--- a/iokit/IOKit/IORPC.h
++++ b/iokit/IOKit/IORPC.h
+@@ -224,6 +224,16 @@ struct IORPC {
+ 	IORPCMessageMach * reply;
+ 	uint32_t           sendSize;
+ 	uint32_t           replySize;
++#ifdef KERNEL
++	/*
++	 * Backported from newer xnu (same name, type and place): Xcode 16's iig
++	 * generates kernel dispatch code that reads the decoded message from
++	 * here. GitHub's runners no longer have Xcode 15 (macOS 14 images
++	 * retired 2026-11-02). IOUserServer fills it wherever it builds an IORPC.
++	 * (Same change as iokit/DriverKit/IORPC.h; the kernel includes this copy.)
 +	 */
 +	IORPCMessage     * kernelContent;
 +#endif /* KERNEL */

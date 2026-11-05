@@ -1,8 +1,8 @@
 From dbc3b1d0548692efc444f00ddb427590f7e68081 Mon Sep 17 00:00:00 2001
 From: x <x@x>
 Date: Thu, 5 Nov 2026 13:19:30 -0800
-Subject: [PATCH 204/204] nx-0204: gate Qualcomm/topaz drivers: SweetCPU
- matches ARM,v8; AppleCLCD keeps AMFI only; SweetBattery static
+Subject: [PATCH 5/9] nx-0204: gate Qualcomm/topaz drivers: SweetCPU matches
+ ARM,v8; AppleCLCD keeps AMFI only; SweetBattery static
 
 ---
  iokit/Kernel/arm/SweetBattery.cpp     |  5 +++++

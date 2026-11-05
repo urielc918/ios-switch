@@ -1,8 +1,8 @@
 From 1d9614d69b5c06f59225d34ea43042d3857ab7dc Mon Sep 17 00:00:00 2001
 From: x <x@x>
 Date: Thu, 5 Nov 2026 13:34:40 -0800
-Subject: [PATCH] nx-0205: SD card root device (rd=sdroot0, sdroot=NAME|mbr:N,
- sdrw=1), polled PIO on SDMMC1
+Subject: [PATCH 6/9] nx-0205: SD card root device (rd=sdroot0,
+ sdroot=NAME|mbr:N, sdrw=1), polled PIO on SDMMC1
 
 ---
  bsd/conf/files                |   1 +

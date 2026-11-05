@@ -10,7 +10,7 @@
 # userland ("SWEET userspace: init running as PID 1", then a heartbeat).
 #
 # --log adds sdlog=1: the kernel writes its console log to the SD card's
-# GPT partition "ioslog" (xnu patch 0207). Read it on a PC with
+# GPT partition "ioslog" (xnu patch 0967). Read it on a PC with
 #   sudo dd if=/dev/<ioslog partition> of=log.bin bs=1M count=5
 #   tools/sweet-log.py log.bin
 #

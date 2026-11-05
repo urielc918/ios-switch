@@ -1,8 +1,8 @@
 From 745bd63d6bac3e8441864a0faac40e87add067bd Mon Sep 17 00:00:00 2001
 From: x <x@x>
 Date: Thu, 5 Nov 2026 13:10:47 -0800
-Subject: [PATCH 200/204] nx-0200: NX=1 machine config (Switch, Tegra X1): one
- A57 cluster, GICv2, vtimer 27, early FB constants
+Subject: [PATCH 1/9] nx-0200: NX=1 machine config (Switch, Tegra X1): one A57
+ cluster, GICv2, vtimer 27, early FB constants
 
 ---
  makedefs/MakeInc.def                 |  3 +-

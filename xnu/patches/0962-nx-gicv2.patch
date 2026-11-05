@@ -1,8 +1,8 @@
 From 2018454b89ec7c66686681b53b28d392c442a76c Mon Sep 17 00:00:00 2001
 From: x <x@x>
 Date: Thu, 5 Nov 2026 13:18:17 -0800
-Subject: [PATCH 202/204] nx-0202: GICv2 (GIC-400) interrupt controller: MMIO
- init, IRQ ack/EOI, SGIs via GICD_SGIR
+Subject: [PATCH 3/9] nx-0202: GICv2 (GIC-400) interrupt controller: MMIO init,
+ IRQ ack/EOI, SGIs via GICD_SGIR
 
 ---
  iokit/Kernel/arm/SweetCPU.cpp |   6 ++

@@ -1,7 +1,7 @@
 From 92fc1c775479c9779bc609d2970a20fa670b23a9 Mon Sep 17 00:00:00 2001
 From: x <x@x>
 Date: Thu, 5 Nov 2026 13:38:33 -0800
-Subject: [PATCH] nx-0207: persistent console log on SD partition ioslog
+Subject: [PATCH 8/9] nx-0207: persistent console log on SD partition ioslog
  (sdlog=1, SWEETLOG format)
 
 ---

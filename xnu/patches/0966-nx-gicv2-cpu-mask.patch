@@ -1,8 +1,8 @@
 From 507201822a026d15e37dd861674a029ca267fccf Mon Sep 17 00:00:00 2001
 From: x <x@x>
 Date: Thu, 5 Nov 2026 13:36:18 -0800
-Subject: [PATCH] nx-0206: GICv2 SGI targets from each core's GICD_ITARGETSR0
- mask (fallback 1 << Aff0)
+Subject: [PATCH 7/9] nx-0206: GICv2 SGI targets from each core's
+ GICD_ITARGETSR0 mask (fallback 1 << Aff0)
 
 ---
  iokit/Kernel/arm/SweetCPU.cpp |  4 ++--

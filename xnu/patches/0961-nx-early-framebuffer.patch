@@ -1,7 +1,7 @@
 From a73b0a31a751d831ad8eb596e57dceb98010227e Mon Sep 17 00:00:00 2001
 From: x <x@x>
 Date: Thu, 5 Nov 2026 13:10:58 -0800
-Subject: [PATCH 201/204] nx-0201: early bootstrap console framebuffer from
+Subject: [PATCH 2/9] nx-0201: early bootstrap console framebuffer from
  SWEET_EARLY_FB_* (NX: 0xF0000000 720x1280)
 
 ---

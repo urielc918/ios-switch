@@ -116,7 +116,7 @@ def build(seed=None, product_path=None, ncpus=4):
     ], [gic,
         node('wdt', [ph(), ('no-pmu', u32(1))]),
         # AppleCLCD matches sweet,display. With NX_SWITCH it only starts the
-        # AMFI service that userland needs (patch 0204) and touches no display
+        # AMFI service that userland needs (patch 0964) and touches no display
         # hardware, so the node stays even before there is a Tegra DC driver.
         node('disp0', [
             ph(),

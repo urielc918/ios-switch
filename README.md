@@ -30,9 +30,9 @@ XNU, with its payload (kernel, Apple device tree, RAM disk) appended to
 | `tools/mkpayload.py` | Kernel + ADT (+ RAM disk) → payload |
 | `tools/nx-sdcard.sh` | Everything above → SD card layout |
 | `tools/rcm-test/` | Tiny RCM payload: proves code runs without a display |
-| `xnu/patches/0001-0152` | ios-sweet / ios-topaz kernel patches |
+| `xnu/patches/0001-0152`, `0900-0950` | ios-sweet / ios-topaz kernel patches |
 | `xnu/patches/0153` | Xcode 16 `iig` compatibility (`IORPC.kernelContent`) |
-| `xnu/patches/0200-0207` | Switch: machine config, early framebuffer, GICv2, secondary CPUs, Qualcomm drivers off, SD root device, SD console log |
+| `xnu/patches/0960-0967` | Switch: machine config, early framebuffer, GICv2, secondary CPUs, Qualcomm drivers off, SD root device, SD console log |
 | `shim/` | the topaz phone shim (shared console code) |
 
 ## Building

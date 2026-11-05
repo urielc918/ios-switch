@@ -15,7 +15,7 @@ DXB_SHA=663906528d1cd5ea8fde7de6f16de73db9511549
 
 export DEVELOPER_DIR=/Applications/Xcode_15.4.app/Contents/Developer
 export MACOS_VERSION=13.5 KERNEL_CONFIG=DEVELOPMENT MACHINE_CONFIG=SWEET
-# Nintendo Switch: 4 KiB pages + NX board (xnu/patches/02xx-nx-*); same as CI
+# Nintendo Switch: 4 KiB pages + NX board (xnu/patches/096x-nx-*); same as CI
 export TOPAZ_4K=${TOPAZ_4K:-1} NX=${NX:-1}
 export KDKROOT=$ROOT/kdkpkg/KDK.pkg/Payload
 export CCACHE_DIR=$ROOT/.ccache CCACHE_BASEDIR=$ROOT CCACHE_COMPILERCHECK=content

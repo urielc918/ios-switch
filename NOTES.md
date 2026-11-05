@@ -500,6 +500,18 @@ cpus=4 to test PSCI + the EL2 drop + SGIs.
   config stays), `switchroot/ios/{bl31,bl33}.bin` (shim without payload),
   `bootloader/ini/ios-nx.ini` (`[iOS NX shim] l4t=1
   boot_prefixes=switchroot/ios/`). Copy onto the card's FAT32 root.
+- **The user's SD card** (461 GB, 10 partitions): `sdc1` FAT32 "SWITCH SD"
+  (atmosphere, emuMMC, Nintendo, hekate 6.5.4 already installed:
+  `update.bin` identical to the release), `sdc2` ext4 "SWR-NOB" = switchroot
+  Ubuntu Noble 5.1.2 (`bootloader/ini/L4T-noble.ini`,
+  `switchroot/ubuntu-noble/`), sdc3-10 unlabeled (Android/emuMMC-style
+  partitions). **Leave all of that alone.**
+- 14:03 copied to the card (only new files): `switchroot/ios/bl31.bin`
+  (= the card's `switchroot/ubuntu-noble/bl31.bin`, SHA-256 dea0ecd4...e2b4,
+  Noble 5.1.2, newer than the Lakka one and proven on this unit),
+  `switchroot/ios/bl33.bin` (shim-nx without payload, verified with cmp),
+  `bootloader/ini/ios-nx.ini` ("[iOS NX shim]", `boot_prefixes=/switchroot/ios/`
+  with a leading slash as in L4T-noble.ini). Then unmounted sdc1/sdc2.
 - **13:47:11 hekate 6.5.4 shows its screen** (after ~30 min on the
   Switch's own power supply, same PC port 1-1, SD card out). So the earlier
   black screens were the low battery, not the payload or USB. Before an

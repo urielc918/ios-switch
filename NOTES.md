@@ -505,7 +505,9 @@ cpus=4 to test PSCI + the EL2 drop + SGIs.
   `update.bin` identical to the release), `sdc2` ext4 "SWR-NOB" = switchroot
   Ubuntu Noble 5.1.2 (`bootloader/ini/L4T-noble.ini`,
   `switchroot/ubuntu-noble/`), sdc3-10 unlabeled (Android/emuMMC-style
-  partitions). **Leave all of that alone.**
+  partitions). **Leave all of that alone.** The user has a backup of the
+  emuNAND (said 14:04) in case the card has to be repartitioned for the
+  `ios`/`ioslog` partitions later; still ask before repartitioning.
 - 14:03 copied to the card (only new files): `switchroot/ios/bl31.bin`
   (= the card's `switchroot/ubuntu-noble/bl31.bin`, SHA-256 dea0ecd4...e2b4,
   Noble 5.1.2, newer than the Lakka one and proven on this unit),

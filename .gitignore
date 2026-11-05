@@ -1,0 +1,23 @@
+# device dumps: persist/modemst/fsg hold IMEI + calibration; live DT holds the serial
+backup/
+dtb/
+recovery/
+# third-party/Apple sources fetched for reading
+research/
+shim/out/
+xnu/out/
+xnu/out-*/
+__pycache__/
+work/
+backup/
+sd/
+logs/
+research/
+*.ipsw
+*.img
+*.simg
+*.dmg
+xnu/out*/
+shim/out/
+shim-nx/out/
+__pycache__/

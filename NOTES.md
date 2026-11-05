@@ -488,6 +488,18 @@ cpus=4 to test PSCI + the EL2 drop + SGIs.
   dies earlier: `hw_init()` (clocks, PMIC, SDRAM) runs before the battery
   check in `ipl_main`.
 - User suspects a **faulty charger**.
+- **bl31.bin source**: switchroot's L4T ATF from the Lakka 5.0 archive
+  (`download.switchroot.org/lakka/Lakka-Switch.aarch64-5.0-devel-
+  20240122151037-5f29696.tar`, plain tar, member `.../lakka/boot/bl31.bin`,
+  45655 bytes, SHA-256 77b7f5c6...cda4, strings `[TF] bl31 exit`,
+  `tegra_sip_fast`). Pulled out by streaming the tar through Python's
+  `tarfile` (`r|`) and keeping only that member; the other switchroot
+  downloads are 2 GB+ 7z archives.
+- `work/sdcard/` (git-ignored) = SD files for the first shim test:
+  hekate 6.5.4 zip's `bootloader/` (no .ini files in it, so the user's
+  config stays), `switchroot/ios/{bl31,bl33}.bin` (shim without payload),
+  `bootloader/ini/ios-nx.ini` (`[iOS NX shim] l4t=1
+  boot_prefixes=switchroot/ios/`). Copy onto the card's FAT32 root.
 - **13:47:11 hekate 6.5.4 shows its screen** (after ~30 min on the
   Switch's own power supply, same PC port 1-1, SD card out). So the earlier
   black screens were the low battery, not the payload or USB. Before an

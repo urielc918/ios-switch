@@ -551,7 +551,10 @@ cpus=4 to test PSCI + the EL2 drop + SGIs.
   `bootloader/ini/ios-nx.ini` ("[iOS NX]", now
   `boot_prefixes=/switchroot/ios/` with the leading slash, as in the
   proven entry). `bl31.bin` is already on the card in
-  `switchroot/ios/`. **Not copied to the card yet** (it's in the Switch).
+  `switchroot/ios/`. **15:24 copied to the card** over hekate's USB
+  mass storage (Nyx Tools -> USB Tools -> SD Card): `bl33.bin` +
+  `ios-nx.ini` verified with cmp; the earlier diagnostics shim was kept as
+  `switchroot/ios/bl33-shim.bin` (copy it over bl33.bin to go back).
 - The CI ccache wrapper now bypasses ccache for `.s` inputs (as
   `tools/build-local.sh` already did): assembler files include the
   generated `assym.s`, which ccache doesn't hash, so stale struct offsets

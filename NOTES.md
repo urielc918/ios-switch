@@ -345,6 +345,20 @@ iOS space contiguous; never move/cross the emuMMC).
   emummc is still partition 10 at 906100736; verifies with cmp.
   Boot: `tools/nx-sdcard.sh OUT KERNEL --log` (rd=sdroot0, sdroot
   default `ios`, sdlog=1 -> `ioslog`).
+- **20:52 `nx-sd-partition.sh --apply` run by the user.** Backup in
+  `research/sd-backup/*-20261105-205236.*` (GPT, first MiB, old `sgdisk -p`:
+  GPT holds only 10 entries). sgdisk warned "MBR partitions 1 and 3
+  overlap" / "2 and 3 overlap" (hekate's hybrid MBR: its 0xEE entry covers
+  the whole card) on both calls, and the change call ended with **"Warning!
+  An error was reported when writing the partition table! This error
+  MIGHT be harmless"**. sgdisk exited non-zero, so the script stopped before
+  its MBR check. **The kernel reread the table (20:52:37) exactly as
+  planned**: sdc1 hos_data, sdc2 l4t unchanged; sdc3 `ios` (AF00)
+  627179520+278888448; sdc4 `ioslog` 906067968+32768; **sdc10 emummc
+  906100736+61143040 unchanged**. MBR table before =
+  `000101000cfeffbd00800000008081150000 0000e00000000000023600f8a403 00000000ee00000001000000ffffa639 ... 55aa`
+  (same in the backup). Pending: the user's `sudo cmp -n 512 backup
+  /dev/sdc` to confirm sector 0 is unchanged.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/
   fsck.hfsplus) and gptfdisk (sgdisk); the kernel has `hfsplus.ko`.
   sudo needs the user's password: they run sudo steps in their terminal.

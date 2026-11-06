@@ -568,6 +568,10 @@ cpus=4 to test PSCI + the EL2 drop + SGIs.
   `SweetCPU::start` (Aff1 <= 1, Aff0 <= 3) already fits the Switch.
   Shim fix (commit 78ed511): the boot prompt goes on the test screen
   (one line per MBR entry now), and the loader gets a fresh screen.
+- CI run 42160158910 (0968): success in 3 min 23 s, 215 patches
+  applied. Kernel SHA-256 a42ab1d7..., in `work/ci-42160158910/`. New
+  `bl33.bin` (shim 78ed511 + this kernel + sweet-init, SHA-256
+  ad2c14b8...) copied to the card over hekate UMS and verified.
 - 19:55 the fusee-nano send reported success but the user saw no hekate; the
   user then sent hekate with **OmniRCM** (their own tool) and it worked.
   fusee-nano had worked at 13:47, so either can be used.

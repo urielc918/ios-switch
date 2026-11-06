@@ -9,7 +9,7 @@ CFLAGS="-O2 -ffreestanding -nostdlib -fno-pic -fno-pie -mgeneral-regs-only -mstr
 	-DFB_BASE=0xF0000000UL -DFB_W=720 -DFB_H=1280 -DSCALE=2"
 mkdir -p out
 objs=()
-for f in start.S main.c display.c i2c.c sdmmc.c loader.c ../shim/console.c; do
+for f in start.S main.c display.c i2c.c sdmmc.c touch.c loader.c ../shim/console.c; do
 	o=out/$(basename "${f%.*}").o
 	$CC $CFLAGS -c "$f" -o "$o"
 	objs+=("$o")

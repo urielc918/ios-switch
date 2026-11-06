@@ -51,6 +51,14 @@ static inline void udelay(uint32_t us)
 
 /* CAR */
 #define CAR_RST_DEVICES_H	(CAR_BASE + 0x008)
+#define CAR_RST_DEVICES_U	(CAR_BASE + 0x00C)
+#define CAR_CLK_OUT_ENB_U	(CAR_BASE + 0x018)
+#define CAR_CLK_SOURCE_I2C3	(CAR_BASE + 0x1B8)
+#define CAR_RST_DEV_U_SET	(CAR_BASE + 0x310)
+#define CAR_RST_DEV_U_CLR	(CAR_BASE + 0x314)
+#define CAR_CLK_ENB_U_SET	(CAR_BASE + 0x330)
+#define CAR_CLK_ENB_U_CLR	(CAR_BASE + 0x334)
+#define  CLK_U_I2C3		BIT(3)
 #define CAR_CLK_OUT_ENB_H	(CAR_BASE + 0x014)
 #define CAR_CLK_SOURCE_I2C5	(CAR_BASE + 0x128)
 #define CAR_CLK_SOURCE_SDMMC1	(CAR_BASE + 0x150)
@@ -71,6 +79,7 @@ static inline void udelay(uint32_t us)
 
 /* GPIO: port index, pin bit. Masked registers take (mask << 8) | value. */
 #define GPIO_PORT_E	4
+#define GPIO_PORT_J	9
 #define GPIO_PORT_M	12
 #define GPIO_PORT_X	23
 #define GPIO_PORT_Z	25
@@ -95,6 +104,11 @@ static inline void gpio_msk(uintptr_t reg, uint32_t mask, uint32_t val)
 #define PINMUX_SDMMC1_DAT1	(PINMUX_BASE + 0x10)
 #define PINMUX_SDMMC1_DAT0	(PINMUX_BASE + 0x14)
 #define PINMUX_DMIC3_CLK	(PINMUX_BASE + 0xB4)
+#define PINMUX_I2C3_SCL		(PINMUX_BASE + 0xCC)	/* 0xBC + 8 * 2 */
+#define PINMUX_I2C3_SDA		(PINMUX_BASE + 0xD0)
+#define PINMUX_I2C4_SCL		(PINMUX_BASE + 0xD4)	/* CAM_I2C */
+#define PINMUX_I2C4_SDA		(PINMUX_BASE + 0xD8)
+#define PINMUX_DAP4_SCLK	(PINMUX_BASE + 0x150)	/* touch reset, GPIO J7 */
 #define PINMUX_GPIO_PZ1		(PINMUX_BASE + 0x280)
 #define  PINMUX_PULL_DOWN	(1 << 2)
 #define  PINMUX_PULL_UP		(2 << 2)

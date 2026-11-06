@@ -499,6 +499,33 @@ iOS space contiguous; never move/cross the emuMMC).
   mode (same sequence the shim proved on I2C5), buses 1-6, for the
   touchscreen next. SweetHID touch geometry is now parametrized: NX =
   720x1280 panel in 750x1334 (offset 12,27, like the display), 77 x 137 mm.
+- CI run 42177862443 (0971 buttons): success, 218 applied; kernel in
+  `work/ci-42177862443/`. bl33.bin = that kernel + shim with touch power-up
+  (SHA-256 95af5a3d...) in `work/sdcard-ios/`, not on the card yet.
+- **Touchscreen facts** (hekate bdk/input/touch.[ch], facts only): STM
+  FTS4, I2C3 (0x7000C500) address 0x49, chip ID 0x3670. Power: reset =
+  GPIO J7 (pad DAP4_SCLK 0x150 = PULL_DOWN|1) low -> MAX77620 LDO6 (CFG
+  0x2F) 2.9 V = 0xEA -> I2C3 pads 0xCC/0xD0 = INPUT_ENABLE and I2C4 pads
+  0xD4/0xD8 |= 1 (detach) -> I2C3 clock U bank bit 3 (RST 0x310/0x314,
+  ENB 0x330/0x334, source 0x1B8 = 6<<29) + divisor/bus clear -> reset high
+  -> 10 ms -> CONTROLLER_READY (0x10) event. Reads use **packet mode with a
+  repeated start** (TX_FIFO 0x50 / RX_FIFO 0x54 / PKT_STATUS 0x58 /
+  FIFO_CTRL 0x5C / FIFO_STATUS 0x60, CNFG PACKET_GO bit 10; header words
+  PROT_I2C bit 4, len-1, addr<<1 | REP_START bit 16 / READ bit 19). Commands:
+  B6 00 04 -> 7 bytes chip info (id = b1<<8|b2, fw = b3<<8|b4); B6 00 23
+  -> event count = b1>>1; 85 -> one 8-byte event; system reset = B6 00 28
+  80 then wait READY; sense on = C3 01 (finger mode), 93 (MS MT sense on),
+  A1 (clear event stack). Event: id = b0 & 0xF (3 ENTER, 4 LEAVE, 5
+  MOTION), finger = b0 >> 4, x = b1<<4 | b3>>4 (long axis, ~15..1264), y =
+  b2<<4 | (b3 & 0xF) (short axis, ~15..704); hekate rescales to 1280x720.
+  **Orientation**: Nyx draws a 1280x720 landscape image and VIC ROTATION_270
+  (transpose + flip X) puts it into the portrait 720x1280 buffer, so for
+  touch (tx, ty) in 1280x720: **fb x = 719 - ty, fb y = tx**.
+- shim-nx `touch.c`: `touch_power_on()` does that power sequence, waits
+  for READY and reads the chip info; `i2c.c` got `i2c3_init()` and
+  `i2c3_xfer_rs()` (packet mode). Screen: one line `TOUCH id=00003670
+  st=RRLLEECC` (ready, LDO6 readback, I2C error, clock re-enabled); runs
+  after the SD step, before the loader. Not yet tested on hardware.
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

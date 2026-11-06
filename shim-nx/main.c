@@ -14,6 +14,7 @@
 #include "i2c.h"
 #include "sdmmc.h"
 #include "loader.h"
+#include "touch.h"
 
 #define HEKATE_FB	0xF5A00000UL
 #define SHIM_FB		FB_BASE		/* build.sh: 0xF0000000 */
@@ -267,6 +268,21 @@ static void test_sd(void)
 		show_gpt(&sd);
 }
 
+/*
+ * Touchscreen power-up for XNU's touch driver (like test_sd for the SD
+ * card). One line: id (expect 3670), then st = ready event | LDO6 readback
+ * (expect EA) | I2C error | I2C3 clock re-enabled, one byte each.
+ */
+static void test_touch(void)
+{
+	struct touch_info t = { 0 };
+	stage = "touch";
+	int r = touch_power_on(&t);
+	uint32_t st = (uint32_t)(t.ready & 0xff) << 24 | (uint32_t)(t.ldo6 & 0xff) << 16 |
+	    (uint32_t)(t.err & 0xff) << 8 | (uint32_t)(t.i2c_clk_fixed & 0xff);
+	con_hex2(r == 0 ? "TOUCH" : "TOUCH!", "id=", t.chip_id, "st=", st);
+}
+
 void shim_main(uint64_t entry_el, uint64_t entry_x0)
 {
 	/* Stage 1: hekate's buffer is what the panel scans out right now. */
@@ -314,6 +330,8 @@ void shim_main(uint64_t entry_el, uint64_t entry_x0)
 	 * the SDHCI and identifies the card itself. Keep it before the loader.
 	 */
 	test_sd();
+	poll_rcm();
+	test_touch();
 	poll_rcm();
 
 	stage = "loader";

@@ -487,6 +487,18 @@ iOS space contiguous; never move/cross the emuMMC).
   Next: a non-Metal default poster (gradient/emoji/photo) in the root
   image; input (touchscreen = STM FTS over I2C, volume keys = GPIO X6/X7,
   power = MAX77620 ONOFFSTAT, Joy-Con over UART); RTC (MAX77620).
+- **0971-nx-buttons** (`bsd/dev/nx_input.c`, started from the NX hook
+  in IOFindBSDRoot next to the SD log; boot-arg `nxkeys=0` disables it):
+  20 ms poll thread; GPIO port X IN (0x6000D53C) pin 6 = volume up, pin 7
+  = volume down (active low); power = MAX77620 (I2C5, 0x3C) ONOFFSTAT
+  0x15 bit 2 EN0 (hekate btn.c: on Erista the power GPIO trace lacks a
+  resistor); **vol+ and vol- together = Home** (key 3, kHIDUsage_Csmr_Menu;
+  iPhone 8 identity). Feeds `sweet_hid_key()` (SweetHID.cpp: 0 power, 1
+  vol up, 2 vol down, 3 home). Logs `NX KEYS: <key> down/up`. Includes
+  `nx_i2c_xfer(bus, addr, wr, wlen, rd, rlen)`: polled Tegra I2C normal
+  mode (same sequence the shim proved on I2C5), buses 1-6, for the
+  touchscreen next. SweetHID touch geometry is now parametrized: NX =
+  720x1280 panel in 750x1334 (offset 12,27, like the display), 77 x 137 mm.
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/
@@ -549,7 +561,7 @@ HEAD), and so what the NX patches have to deal with:
 
 ## XNU NX patches (2026-11-05, not built yet)
 
-`xnu/patches/0960-0970-nx-*.patch` (0960-0967 first numbered 0200-0207, see "CI" for why they moved), made on branch `nx` of
+`xnu/patches/0960-0971-nx-*.patch` (0960-0967 first numbered 0200-0207, see "CI" for why they moved), made on branch `nx` of
 `work/xnu-src/xnu` (`master` = pristine + topaz series, unchanged).
 Checked: all eight apply in order with `git apply --check` on a `master`
 worktree, and the result is identical to `nx`. **Not compiled**: XNU only

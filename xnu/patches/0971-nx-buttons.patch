@@ -1,0 +1,363 @@
+From a9fbbceaaca8dc084e69a743647239c344458984 Mon Sep 17 00:00:00 2001
+From: x <x@x>
+Date: Thu, 5 Nov 2026 22:58:54 -0800
+Subject: [PATCH] nx-0971: Switch buttons (vol GPIO X6/X7, power via MAX77620
+ ONOFFSTAT, vol+ and vol- = Home); Tegra I2C helper; touch geometry for the
+ 720x1280 panel
+
+---
+ bsd/conf/files                    |   1 +
+ bsd/dev/nx_input.c                | 242 ++++++++++++++++++++++++++++++
+ iokit/Kernel/arm/hid/SweetHID.cpp |  37 +++--
+ iokit/bsddev/IOKitBSDInit.cpp     |   2 +
+ 4 files changed, 272 insertions(+), 10 deletions(-)
+ create mode 100644 bsd/dev/nx_input.c
+
+diff --git a/bsd/conf/files b/bsd/conf/files
+index 4e06104..f6a5db1 100644
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -106,6 +106,7 @@ bsd/dev/random/randomdev.c		standard
+ bsd/dev/memdev.c			standard
+ bsd/dev/sweet_ufs.c			standard
+ bsd/dev/nx_sdmmc.c			standard
++bsd/dev/nx_input.c			standard
+ bsd/dev/redwood_sta.c		standard
+ bsd/dev/redwood_net.c		standard
+ bsd/dev/redwood_apple80211.c	standard
+diff --git a/bsd/dev/nx_input.c b/bsd/dev/nx_input.c
+new file mode 100644
+index 0000000..d84ee4e
+--- /dev/null
++++ b/bsd/dev/nx_input.c
+@@ -0,0 +1,242 @@
++/*
++ * Nintendo Switch buttons for the SWEET HID services (iokit/Kernel/arm/hid/SweetHID.cpp).
++ *
++ *   volume up    GPIO port X pin 6, active low
++ *   volume down  GPIO port X pin 7, active low
++ *   power        MAX77620 PMIC (I2C5, address 0x3C) ONOFFSTAT (0x15) bit 2 (EN0);
++ *                on Erista the power key's GPIO trace misses a resistor
++ *   Home         volume up + volume down together (the iPhone 8 identity has a
++ *                Home button; the Switch has none without Joy-Con)
++ *
++ * Polled every 20 ms by a kernel thread; everything is read-only except the
++ * I2C controller's own registers. The Tegra I2C helper (normal mode, up to 8
++ * data bytes, polled) is shared with the touchscreen driver to come (I2C3).
++ * Boot-arg nxkeys=0 disables the buttons.
++ */
++#include <sys/param.h>
++#include <sys/types.h>
++#include <sys/errno.h>
++
++void nx_input_start(void);
++int nx_i2c_xfer(unsigned bus, uint8_t addr, const uint8_t *wr, unsigned wlen, uint8_t *rd, unsigned rlen);
++
++#if defined(NX_SWITCH)
++#include <sys/systm.h>
++#include <kern/locks.h>
++#include <kern/clock.h>
++#include <kern/sched_prim.h>
++#include <machine/machine_routines.h>
++#include <pexpert/pexpert.h>
++#include <libkern/libkern.h>
++
++extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
++extern kern_return_t kernel_thread_start(thread_continue_t, void *, thread_t *);
++extern void thread_deallocate(thread_t);
++extern void sweet_hid_key(int key, int down);   /* 0 power, 1 vol up, 2 vol down, 3 home */
++
++#define GPIO_PA         0x6000D000u
++#define GPIO_PORT_X     23u
++#define GPIO_IN(p)      (0x30u + (((p) >> 2) << 8) + (((p) & 3u) << 2))
++#define PIN_VOL_UP      6u
++#define PIN_VOL_DOWN    7u
++
++/* Tegra I2C controllers: I2C1..I2C6 at these offsets from 0x7000C000. */
++#define I2C_PA          0x7000C000u
++static const uint16_t i2c_off[6] = { 0x0, 0x400, 0x500, 0x700, 0x1000, 0x1100 };
++#define I2C_CNFG        0x00
++#define  CNFG_LEN(n)    (((n) - 1u) << 1)
++#define  CNFG_READ      (1u << 6)
++#define  CNFG_GO        (1u << 9)
++#define  CNFG_NEW_FSM   (1u << 11)
++#define  CNFG_DEBOUNCE4 (2u << 12)
++#define I2C_CMD_ADDR0   0x04
++#define I2C_CMD_DATA1   0x0C
++#define I2C_CMD_DATA2   0x10
++#define I2C_STATUS      0x1C
++#define  STATUS_BUSY    (1u << 8)
++#define  STATUS_NOACK   0xFu
++#define I2C_CONFIG_LOAD 0x8C
++
++#define PMIC_ADDR       0x3C
++#define PMIC_ONOFFSTAT  0x15
++#define  ONOFFSTAT_EN0  (1u << 2)
++
++static vm_offset_t gpio_base, i2c_base;
++static LCK_GRP_DECLARE(nx_input_grp, "nx_input");
++static LCK_MTX_DECLARE(nx_i2c_lock, &nx_input_grp);
++static int keys_chan;
++
++static inline uint32_t
++rd32(vm_offset_t a)
++{
++	return *(volatile uint32_t *)a;
++}
++
++static inline void
++wr32(vm_offset_t a, uint32_t v)
++{
++	*(volatile uint32_t *)a = v;
++}
++
++static uint64_t
++now_us(void)
++{
++	uint64_t ns;
++	absolutetime_to_nanoseconds(mach_absolute_time(), &ns);
++	return ns / NSEC_PER_USEC;
++}
++
++/* One normal-mode transaction of 1..8 bytes. Lock held. */
++static int
++i2c_one(vm_offset_t b, uint8_t addr, bool read, uint8_t *buf, unsigned len)
++{
++	uint32_t d[2] = { 0, 0 };
++	if (len == 0 || len > 8) {
++		return EINVAL;
++	}
++	wr32(b + I2C_CMD_ADDR0, (uint32_t)addr << 1 | (read ? 1u : 0u));
++	if (!read) {
++		memcpy(d, buf, len);
++		wr32(b + I2C_CMD_DATA1, d[0]);
++		wr32(b + I2C_CMD_DATA2, d[1]);
++	}
++	uint32_t cnfg = CNFG_LEN(len) | CNFG_DEBOUNCE4 | CNFG_NEW_FSM | (read ? CNFG_READ : 0);
++	wr32(b + I2C_CNFG, cnfg);
++	wr32(b + I2C_CONFIG_LOAD, (1u << 5) | (1u << 2) | 1u);
++	uint64_t t = now_us();
++	while ((rd32(b + I2C_CONFIG_LOAD) & 1u) && now_us() - t < 1000) {
++	}
++	wr32(b + I2C_CNFG, cnfg | CNFG_GO);
++	t = now_us();
++	while (rd32(b + I2C_STATUS) & STATUS_BUSY) {
++		if (now_us() - t > 100000) {
++			return ETIMEDOUT;
++		}
++	}
++	if (rd32(b + I2C_STATUS) & STATUS_NOACK) {
++		return ENXIO;
++	}
++	if (read) {
++		d[0] = rd32(b + I2C_CMD_DATA1);
++		d[1] = rd32(b + I2C_CMD_DATA2);
++		memcpy(buf, d, len);
++	}
++	return 0;
++}
++
++/*
++ * Write wlen bytes, then (if rlen) read rlen bytes from the same device,
++ * as two transactions with a stop in between. bus: 1..6.
++ */
++int
++nx_i2c_xfer(unsigned bus, uint8_t addr, const uint8_t *wr, unsigned wlen, uint8_t *rd, unsigned rlen)
++{
++	uint8_t tmp[8];
++	int error = 0;
++
++	if (i2c_base == 0 || bus < 1 || bus > 6 || wlen > 8 || rlen > 8) {
++		return EINVAL;
++	}
++	vm_offset_t b = i2c_base + i2c_off[bus - 1];
++	lck_mtx_lock(&nx_i2c_lock);
++	if (wlen) {
++		memcpy(tmp, wr, wlen);
++		error = i2c_one(b, addr, false, tmp, wlen);
++	}
++	if (!error && rlen) {
++		error = i2c_one(b, addr, true, rd, rlen);
++	}
++	lck_mtx_unlock(&nx_i2c_lock);
++	return error;
++}
++
++static void
++keys_wait(void)
++{
++	uint64_t deadline;
++	clock_interval_to_deadline(20, NSEC_PER_MSEC, &deadline);
++	(void)assert_wait_deadline(&keys_chan, THREAD_UNINT, deadline);
++	thread_block(THREAD_CONTINUE_NULL);
++}
++
++static void
++keys_thread(__unused void *arg, __unused wait_result_t wr)
++{
++	int state[4] = { 0, 0, 0, 0 };          /* power, vol up, vol down, home */
++	unsigned errors = 0;
++
++	for (;;) {
++		uint32_t in = rd32(gpio_base + GPIO_IN(GPIO_PORT_X));
++		uint8_t reg = PMIC_ONOFFSTAT, onoff = 0;
++		int perr = nx_i2c_xfer(5, PMIC_ADDR, &reg, 1, &onoff, 1);
++		if (perr) {
++			if ((errors++ % 250u) == 0) {
++				printf("NX KEYS: PMIC read error %d\n", perr);
++			}
++		} else {
++			errors = 0;
++		}
++		int now[4];
++		now[0] = perr ? state[0] : !!(onoff & ONOFFSTAT_EN0);
++		now[1] = !(in & (1u << PIN_VOL_UP));
++		now[2] = !(in & (1u << PIN_VOL_DOWN));
++		now[3] = now[1] && now[2];
++		for (int k = 0; k < 4; k++) {
++			if (now[k] != state[k]) {
++				state[k] = now[k];
++				printf("NX KEYS: %s %s\n", k == 0 ? "power" : k == 1 ? "volume-up" :
++				    k == 2 ? "volume-down" : "home (vol+ and vol-)", state[k] ? "down" : "up");
++				sweet_hid_key(k, state[k]);
++			}
++		}
++		keys_wait();
++	}
++}
++
++/* Called once from IOFindBSDRoot (iokit/bsddev/IOKitBSDInit.cpp). */
++void
++nx_input_start(void)
++{
++	static bool started;
++	uint32_t keys = 1;
++	thread_t thread;
++
++	if (started) {
++		return;
++	}
++	started = true;
++	gpio_base = ml_io_map(GPIO_PA, 0x1000);
++	i2c_base = ml_io_map(I2C_PA, 0x2000);
++	if (gpio_base == 0 || i2c_base == 0) {
++		printf("NX INPUT: MMIO mapping failed\n");
++		return;
++	}
++	(void)PE_parse_boot_argn("nxkeys", &keys, sizeof(keys));
++	if (!keys) {
++		printf("NX KEYS: disabled (nxkeys=0)\n");
++		return;
++	}
++	uint8_t reg = PMIC_ONOFFSTAT, onoff = 0;
++	int perr = nx_i2c_xfer(5, PMIC_ADDR, &reg, 1, &onoff, 1);
++	printf("NX KEYS: GPIO X in %#x, PMIC ONOFFSTAT %#x (err %d); vol+ and vol- together = Home\n",
++	    rd32(gpio_base + GPIO_IN(GPIO_PORT_X)), onoff, perr);
++	if (kernel_thread_start(keys_thread, NULL, &thread) == KERN_SUCCESS) {
++		thread_deallocate(thread);
++	}
++}
++
++#else /* !NX_SWITCH */
++
++void
++nx_input_start(void)
++{
++}
++
++int
++nx_i2c_xfer(__unused unsigned bus, __unused uint8_t addr, __unused const uint8_t *wr, __unused unsigned wlen,
++    __unused uint8_t *rd, __unused unsigned rlen)
++{
++	return ENXIO;
++}
++
++#endif /* NX_SWITCH */
+diff --git a/iokit/Kernel/arm/hid/SweetHID.cpp b/iokit/Kernel/arm/hid/SweetHID.cpp
+index d2f4fa1..445a65e 100644
+--- a/iokit/Kernel/arm/hid/SweetHID.cpp
++++ b/iokit/Kernel/arm/hid/SweetHID.cpp
+@@ -356,6 +356,23 @@ OSDefineMetaClassAndStructors(SweetHIDButtons, IOHIDEventService);
+  * app-switcher gesture.
+  */
+ #define SWEET_TOUCH_EDGE_PX 48
++#if defined(NX_SWITCH)
++/* Nintendo Switch: 720x1280 panel (6.2", ~77 x 137 mm) in a 750x1334 iPhone 8 screen */
++#define SWEET_TOUCH_PANEL_W     720
++#define SWEET_TOUCH_PANEL_H     1280
++#define SWEET_TOUCH_LOGICAL_W   750
++#define SWEET_TOUCH_LOGICAL_H   1334
++#define SWEET_TOUCH_MM_W        77
++#define SWEET_TOUCH_MM_H        137
++#else
++/* topaz: 1080x2400 panel in a 1125x2436 iPhone X screen */
++#define SWEET_TOUCH_PANEL_W     1080
++#define SWEET_TOUCH_PANEL_H     2400
++#define SWEET_TOUCH_LOGICAL_W   1125
++#define SWEET_TOUCH_LOGICAL_H   2436
++#define SWEET_TOUCH_MM_W        68
++#define SWEET_TOUCH_MM_H        151
++#endif
+ class SweetHIDTouch : public IOHIDEventService {
+ 	OSDeclareDefaultStructors(SweetHIDTouch);
+ public:
+@@ -434,14 +451,14 @@ SweetHIDTouch::start(IOService *provider)
+ 	}
+ 	int native = 0;
+ 	PE_parse_boot_argn("sweetfb_native", &native, sizeof(native));
+-	fLogicalW = native ? 1080 : 1125;
+-	fLogicalH = native ? 2400 : 2436;
+-	fOffX = ((fLogicalW - 1080) / 2) & ~3;           /* as SweetFramebuffer.cpp */
+-	fOffY = (fLogicalH - 2400) / 2;
++	fLogicalW = native ? SWEET_TOUCH_PANEL_W : SWEET_TOUCH_LOGICAL_W;
++	fLogicalH = native ? SWEET_TOUCH_PANEL_H : SWEET_TOUCH_LOGICAL_H;
++	fOffX = ((fLogicalW - SWEET_TOUCH_PANEL_W) / 2) & ~3;   /* as SweetFramebuffer.cpp */
++	fOffY = (fLogicalH - SWEET_TOUCH_PANEL_H) / 2;
+ 	/* The digitizer covers the main display (backboardd maps it 1:1). */
+ 	setProperty("DisplayIntegrated", kOSBooleanTrue);
+-	setProperty("SurfaceWidth", (unsigned long long)(68 << 16), 32);	/* mm, 16.16 */
+-	setProperty("SurfaceHeight", (unsigned long long)(151 << 16), 32);
++	setProperty("SurfaceWidth", (unsigned long long)(SWEET_TOUCH_MM_W << 16), 32);	/* mm, 16.16 */
++	setProperty("SurfaceHeight", (unsigned long long)(SWEET_TOUCH_MM_H << 16), 32);
+ 	gSweetTouch = this;
+ 	registerService();
+ 	IOLog("SWEET HID: touch registered\n");
+@@ -458,8 +475,8 @@ SweetHIDTouch::touch(int finger, bool down, int x, int y)
+ 	if (finger < 0 || finger >= SWEET_TOUCH_FINGERS) {
+ 		return;
+ 	}
+-	x = x < 0 ? 0 : (x > 1079 ? 1079 : x);
+-	y = y < 0 ? 0 : (y > 2399 ? 2399 : y);
++	x = x < 0 ? 0 : (x > SWEET_TOUCH_PANEL_W - 1 ? SWEET_TOUCH_PANEL_W - 1 : x);
++	y = y < 0 ? 0 : (y > SWEET_TOUCH_PANEL_H - 1 ? SWEET_TOUCH_PANEL_H - 1 : y);
+ 
+ 	IOLockLock(fLock);
+ 	bool was = fDown[finger];
+@@ -472,8 +489,8 @@ SweetHIDTouch::touch(int finger, bool down, int x, int y)
+ 		return;
+ 	}
+ 	if (!was && down) {
+-		fEdge[finger] = x < SWEET_TOUCH_EDGE_PX || x > 1079 - SWEET_TOUCH_EDGE_PX ||
+-		    y < SWEET_TOUCH_EDGE_PX || y > 2399 - SWEET_TOUCH_EDGE_PX;
++		fEdge[finger] = x < SWEET_TOUCH_EDGE_PX || x > SWEET_TOUCH_PANEL_W - 1 - SWEET_TOUCH_EDGE_PX ||
++		    y < SWEET_TOUCH_EDGE_PX || y > SWEET_TOUCH_PANEL_H - 1 - SWEET_TOUCH_EDGE_PX;
+ 	}
+ 
+ 	collection = IOHIDEvent::digitizerEvent(now, 0, kIOHIDDigitizerTransducerTypeHand, false, 0, 0, 0);
+diff --git a/iokit/bsddev/IOKitBSDInit.cpp b/iokit/bsddev/IOKitBSDInit.cpp
+index 9e9e35c..38f6570 100644
+--- a/iokit/bsddev/IOKitBSDInit.cpp
++++ b/iokit/bsddev/IOKitBSDInit.cpp
+@@ -788,7 +788,9 @@ IOFindBSDRoot( char * rootName, unsigned int rootNameSize,
+ //
+ 	{
+ 		extern void nx_sdmmc_log_start(void);
++		extern void nx_input_start(void);
+ 		nx_sdmmc_log_start();
++		nx_input_start();       /* bsd/dev/nx_input.c: buttons (NX only) */
+ 	}
+ 	if (strcmp(rdBootVar, "sdroot0") == 0) {
+ 		extern int nx_sdmmc_rootdev(dev_t *dev);
+-- 
+2.55.0
+

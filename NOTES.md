@@ -2,8 +2,9 @@
 
 Goal: bring up XNU (xnu-8796, iOS 16 generation) on a Nintendo Switch
 (rev 0 / Erista, Tegra X1 T210), following the dipa-studio/ios-sweet
-approach. **Status 2026-11-05 evening: XNU boots on the Switch on all 4 cores to a
-PID 1 init in userland** (see "Hardware log"). Earlier the same day: design and
+approach. **Status 2026-11-05 night: XNU + the iOS 16 userland (launchd,
+188 daemons) run on the Switch, root on the SD card; SpringBoard waits for
+a display driver** (see "Hardware log"). Earlier the same day: design and
 fact-gathering done, no Switch-specific code written yet. Session 2 (same day) re-read hekate's
 L4T launcher for the BL33 handoff and fixed the `shim-nx/` design (see
 "Session 2" below). `shim-nx/` is now **written and builds, but has not
@@ -413,6 +414,22 @@ iOS space contiguous; never move/cross the emuMMC).
   unentitled_ios_sim_launch=1 ignition_level=1 launchd_unsecure_cache=1
   wdt=-1 wdt_test=no_user_checkin` (+ sdlog=1 with --log). Built in
   `work/sdcard-ios/`, not yet on the card.
+- **2026-11-05 ~21:52: iOS 16 USERLAND RUNS ON THE SWITCH** (0969 kernel,
+  bl33.bin SHA-256 a146c247..., cmdline with unentitled_ios_sim_launch=1
+  etc.). Log `logs/ioslog-3.bin` -> `.txt` (207,530 bytes, 85 flushes =
+  ~3 min, 3576 lines; use `grep -a`, the text has some binary bytes):
+  `BSD root: sdroot0`, `hfs: mounted iOSRoot`, `load_init_program ...
+  /sbin/launchd`, then **416 execs of 188 distinct programs** (xpcproxy
+  190x, SpringBoard 15x, fairplayd.H2 10x, bluetoothd 9x,
+  com.apple.datamigrator 5x, watchdogd/usermanagerd/mount/keybagd 2x,
+  UserEventAgent, triald, tzinit, voiced, wifianalyticsd, UARP updaters,
+  ...), AppleKeyStore stand-in answering searchpartyd/networkserviceproxy.
+  **No kernel panic.** SpringBoard crash-loops: `NSInternalInconsistencyException
+  'We expect a valid bounds for configuration: <FBSDisplayConfiguration ...
+  CADisplay bounds: {{0, 0}, {0, 0}}'` and `crashed: SpringBoard. Too many
+  corpses being created.`: no display, because AppleCLCD returns false under
+  NX (patch 0964). **Next: an NX display driver** (AppleCLCD on the Tegra
+  DC framebuffer at 0xF0000000, 720x1280, presented as 750x1334 @2x).
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/
   fsck.hfsplus) and gptfdisk (sgdisk); the kernel has `hfsplus.ko`.
   sudo needs the user's password: they run sudo steps in their terminal.

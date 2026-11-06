@@ -722,6 +722,22 @@ iOS space contiguous; never move/cross the emuMMC).
     and `switchroot/ios-test/` were removed. A rebuild with nx-sdcard.sh
     needs the 0974 kernel: `work/ci-42276661937/kernel.development.sweet`
     (note: its shim would come from clang 23, untested; see Session 4).
+- **0975-nx-sd-highspeed (written, syntax-checked, pushed for CI)**: SD
+  high speed in bsd/dev/nx_sdmmc.c, after the 4-bit switch, as hekate's
+  `_sd_storage_set_hs25_bus_speed` (bdk/storage/sdmmc.c) + `sdmmc_setup_clock`
+  (SDHCI_TIMING_SD_HS25) + bdk/soc/clock.c: CMD6 check 0x00FFFFF1 and set
+  0x80FFFFF1 (64-byte status: byte 13 bit 1 = HS supported, byte 16 low
+  nibble = group 1 result, must be 1), host HOSTCTL bit 2 (HISPD), module
+  clock CAR CLK_SOURCE_SDMMC1 (0x150) PLLP div 31 -> **15 = 48 MHz** (gated
+  via CLK_ENB_L_CLR/SET 0x324/0x320 bit 14 while changing, as hekate), card
+  divisor 1, tap 4 unchanged (hekate's T210 SDMMC1 tap for all non-HS400
+  modes). Verified before use: CMD13 + re-read of LBA 1 compared with the
+  copy read at 24.7 MHz; on any failure back to div 31 / no HISPD (the card
+  stays in HS mode, which is fine at 24.7 MHz). Boot-args: `sdhs=0` skips
+  it; `sdbench=N` times N MiB (max 64) of 1 MiB reads from the root
+  partition start and logs `NX SD: bench ... KB/s at X MHz`. The card line
+  now ends with `high speed 48.0 MHz` or `default speed 24.7 MHz`.
+  Theoretical: 4 bits x 24.7 MHz = 12.4 MB/s -> 24 MB/s (PIO overhead aside).
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

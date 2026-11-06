@@ -305,8 +305,11 @@ sgdisk commands first.
   `sudo tools/mkiosroot.sh research/ipsw-8/087-86684-044.dmg
   research/ipsw-8/087-86580-047.dmg research/ipsw-8/087-86715-047.dmg
   research/ipsw-8/ios16-root-d20ap-20H392.img 16G` once apfs-fuse and
-  hfsprogs are installed (check `tools/sweet-root-tweaks.py` for
-  iPhone X-specific tweaks before using the image).
+  hfsprogs are installed. Then `fsck.hfsplus -fy` + `mount -t hfsplus -o
+  loop,force` + `sudo tools/sweet-root-tweaks.py MOUNT`: checked, it is
+  device-independent (BUILD 20H392 = the iPhone 8 build too; launchd jobs,
+  containers, DataMigration, audio, MediaToolbox, SpringBoard, Setup,
+  activation), so it can be used unchanged.
 - Tools missing on this machine: apfs-fuse, hfsprogs (mkfs.hfsplus/
   fsck.hfsplus), gptfdisk (sgdisk). The kernel has `hfsplus.ko`. The user
   has to install them (pacman: gptfdisk; AUR: apfs-fuse, hfsprogs).

@@ -63,8 +63,7 @@ else
 	# launchd's job cache without AMFI; no watchdog.
 	cmdline="$cmdline cpus=$cpus rd=sdroot0 sdrw=1 rootrw=1 unentitled_ios_sim_launch=1 ignition_level=1 launchd_unsecure_cache=1 wdt=-1 wdt_test=no_user_checkin"
 	[ -n "$console" ] || cmdline="$cmdline sweetfb_noconsole=1"
-	# No touch or buttons to wake the screen yet: ignore iOS's display-off (auto-lock).
-	cmdline="$cmdline sweetfb_stayon=1"
+	# (sweetfb_stayon=1 is no longer needed: the power button wakes the display, patch 0971.)
 fi
 python3 "$TREE/tools/mkadt-nx.py" "$work/nx.adt" --cpus 4
 python3 "$TREE/tools/mkpayload.py" "$kernel" "$work/nx.adt" "$work/payload.bin" \

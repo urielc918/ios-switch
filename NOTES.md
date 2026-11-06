@@ -526,6 +526,28 @@ iOS space contiguous; never move/cross the emuMMC).
   `i2c3_xfer_rs()` (packet mode). Screen: one line `TOUCH id=00003670
   st=RRLLEECC` (ready, LDO6 readback, I2C error, clock re-enabled); runs
   after the SD step, before the loader. Not yet tested on hardware.
+- **Buttons work on hardware** (0971 boot, log `logs/ioslog-6.bin`):
+  `NX KEYS: GPIO X in 0xc0, PMIC ONOFFSTAT 0x2 (err 0)` at start, then
+  clean volume-up/volume-down/power down/up pairs; each power press made
+  iOS request display-off (ignored by sweetfb_stayon then). User: "buttons
+  work, background works, but no touch" (no kernel touch driver yet).
+  User also noticed the **crop** ("screen seemed to overscan a tiny bit").
+  sweetfb_stayon=1 is dropped from nx-sdcard.sh at the user's request
+  (power now wakes the display).
+- **0972-nx-touch-scale**: (1) display: under NX `present()` **scales** the
+  750x1334 iPhone 8 screen onto the 720x1280 panel (nearest neighbour,
+  LUTs nx_lx[720]/nx_ly[1280], logical = panel*750/720, *1334/1280) instead
+  of cropping 12/18/27/27 px; SweetHID NX logical = panel (720x1280), so
+  touch normalizes to x/720, y/1280. (2) touch in `nx_input.c`: packet-mode
+  repeated-start reads (`i2c_rs`, same register sequence as the shim), chip
+  info at start (`NX TOUCH: chip 0x3670 fw ...`; gives up if the shim didn't
+  power it), thread: reset `B6 00 28 80` + wait READY (200 ms), `C3 01`,
+  `93`, `A1`, then every 10 ms: count (`B6 00 23`) + up to 16 events (`85`).
+  ENTER/MOTION -> down at fts_map(raw), LEAVE -> up at the last position.
+  fts_map: clamp 15..1264 / 15..704, scale to 1280x720 (hekate), then
+  **fb x = 719 - ty, fb y = tx**; boot-arg `nxtouchrot` 1 flip x, 2 flip y,
+  4 swap; `nxtouch=0` off. The first 20 transitions are logged with raw and
+  panel coordinates for calibration.
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/
@@ -588,7 +610,7 @@ HEAD), and so what the NX patches have to deal with:
 
 ## XNU NX patches (2026-11-05, not built yet)
 
-`xnu/patches/0960-0971-nx-*.patch` (0960-0967 first numbered 0200-0207, see "CI" for why they moved), made on branch `nx` of
+`xnu/patches/0960-0972-nx-*.patch` (0960-0967 first numbered 0200-0207, see "CI" for why they moved), made on branch `nx` of
 `work/xnu-src/xnu` (`master` = pristine + topaz series, unchanged).
 Checked: all eight apply in order with `git apply --check` on a `master`
 worktree, and the result is identical to `nx`. **Not compiled**: XNU only

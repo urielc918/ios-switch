@@ -1,0 +1,430 @@
+From aca90342783e1019d8ca323fce59234ddee3111a Mon Sep 17 00:00:00 2001
+From: x <x@x>
+Date: Thu, 5 Nov 2026 23:16:00 -0800
+Subject: [PATCH] nx-0972: STM FTS4 touchscreen (I2C3 packet mode,
+ landscape->portrait like Nyx), iPhone 8 screen scaled onto the panel instead
+ of cropped
+
+---
+ bsd/dev/nx_input.c                    | 252 +++++++++++++++++++++++++-
+ iokit/Kernel/arm/SweetFramebuffer.cpp |  75 ++++++++
+ iokit/Kernel/arm/hid/SweetHID.cpp     |  10 +-
+ 3 files changed, 331 insertions(+), 6 deletions(-)
+
+diff --git a/bsd/dev/nx_input.c b/bsd/dev/nx_input.c
+index d84ee4e..f5345de 100644
+--- a/bsd/dev/nx_input.c
++++ b/bsd/dev/nx_input.c
+@@ -9,9 +9,15 @@
+  *                Home button; the Switch has none without Joy-Con)
+  *
+  * Polled every 20 ms by a kernel thread; everything is read-only except the
+- * I2C controller's own registers. The Tegra I2C helper (normal mode, up to 8
+- * data bytes, polled) is shared with the touchscreen driver to come (I2C3).
+- * Boot-arg nxkeys=0 disables the buttons.
++ * I2C controller's own registers. Boot-arg nxkeys=0 disables the buttons.
++ *
++ * Touchscreen: STM FTS4 on I2C3, address 0x49, powered up and identified by
++ * shim-nx (touch.c: reset GPIO J7, LDO6, I2C3 clock). Here: system reset,
++ * finger sensing on, then the event stack is read every 10 ms. Coordinates
++ * come in landscape (x along the long side); like hekate's Nyx (VIC rotation
++ * 270) they map to the portrait 720x1280 panel as fb x = 719 - y, fb y = x.
++ * Boot-args: nxtouch=0 disables it, nxtouchrot=N corrects the mapping
++ * (1 flip x, 2 flip y, 4 swap x/y, applied after the default).
+  */
+ #include <sys/param.h>
+ #include <sys/types.h>
+@@ -33,6 +39,7 @@ extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
+ extern kern_return_t kernel_thread_start(thread_continue_t, void *, thread_t *);
+ extern void thread_deallocate(thread_t);
+ extern void sweet_hid_key(int key, int down);   /* 0 power, 1 vol up, 2 vol down, 3 home */
++extern void sweet_hid_touch(int finger, int down, int x, int y);    /* panel pixels */
+ 
+ #define GPIO_PA         0x6000D000u
+ #define GPIO_PORT_X     23u
+@@ -56,6 +63,15 @@ static const uint16_t i2c_off[6] = { 0x0, 0x400, 0x500, 0x700, 0x1000, 0x1100 };
+ #define  STATUS_BUSY    (1u << 8)
+ #define  STATUS_NOACK   0xFu
+ #define I2C_CONFIG_LOAD 0x8C
++#define I2C_TX_FIFO     0x50
++#define I2C_RX_FIFO     0x54
++#define I2C_PKT_STATUS  0x58
++#define I2C_FIFO_CTRL   0x5C
++#define I2C_FIFO_STATUS 0x60
++#define  CNFG_PKT_GO    (1u << 10)
++#define  PKT_PROT_I2C   (1u << 4)
++#define  HDR_REP_START  (1u << 16)
++#define  HDR_READ       (1u << 19)
+ 
+ #define PMIC_ADDR       0x3C
+ #define PMIC_ONOFFSTAT  0x15
+@@ -150,6 +166,217 @@ nx_i2c_xfer(unsigned bus, uint8_t addr, const uint8_t *wr, unsigned wlen, uint8_
+ 	return error;
+ }
+ 
++/* Write tx, repeated start, read rx (packet mode: 1..20 and 1..32 bytes). */
++static int
++i2c_rs(vm_offset_t b, uint8_t addr, const uint8_t *tx, unsigned txlen, uint8_t *rx, unsigned rxlen)
++{
++	int error = 0;
++	if (txlen == 0 || txlen > 20 || rxlen == 0 || rxlen > 32) {
++		return EINVAL;
++	}
++	wr32(b + I2C_CMD_ADDR0, (uint32_t)addr << 1 | 1u);
++	wr32(b + I2C_CNFG, CNFG_DEBOUNCE4 | CNFG_NEW_FSM | CNFG_READ);
++	wr32(b + I2C_FIFO_CTRL, 3u);                    /* flush RX and TX */
++	wr32(b + I2C_CONFIG_LOAD, (1u << 5) | (1u << 2) | 1u);
++	uint64_t t = now_us();
++	while ((rd32(b + I2C_CONFIG_LOAD) & 1u) && now_us() - t < 1000) {
++	}
++	wr32(b + I2C_CNFG, (rd32(b + I2C_CNFG) & ~CNFG_GO) | CNFG_PKT_GO);
++	wr32(b + I2C_TX_FIFO, PKT_PROT_I2C);
++	wr32(b + I2C_TX_FIFO, txlen - 1);
++	wr32(b + I2C_TX_FIFO, HDR_REP_START | (uint32_t)addr << 1);
++	for (unsigned i = 0; i < txlen; i += 4) {
++		uint32_t w = 0;
++		for (unsigned j = 0; j < 4 && i + j < txlen; j++) {
++			w |= (uint32_t)tx[i + j] << (8 * j);
++		}
++		wr32(b + I2C_TX_FIFO, w);
++	}
++	t = now_us();
++	while (((rd32(b + I2C_PKT_STATUS) >> 4) & 0xFFFu) != txlen - 1) {
++		if (now_us() - t > 100000) {
++			error = ETIMEDOUT;
++			goto out;
++		}
++	}
++	wr32(b + I2C_TX_FIFO, PKT_PROT_I2C);
++	wr32(b + I2C_TX_FIFO, rxlen - 1);
++	wr32(b + I2C_TX_FIFO, HDR_READ | (uint32_t)addr << 1);
++	t = now_us();
++	for (unsigned i = 0; i < rxlen;) {
++		if (rd32(b + I2C_FIFO_STATUS) & 0xFu) {
++			uint32_t w = rd32(b + I2C_RX_FIFO);
++			for (unsigned j = 0; j < 4 && i < rxlen; j++, i++) {
++				rx[i] = (uint8_t)(w >> (8 * j));
++			}
++		}
++		if (now_us() - t > 100000) {
++			error = ETIMEDOUT;
++			break;
++		}
++	}
++out:
++	if (rd32(b + I2C_STATUS) & STATUS_NOACK) {
++		error = ENXIO;
++	}
++	delay(20);
++	wr32(b + I2C_CNFG, rd32(b + I2C_CNFG) & ~(CNFG_PKT_GO | CNFG_GO));
++	return error;
++}
++
++static int
++nx_i2c_rs(unsigned bus, uint8_t addr, const uint8_t *tx, unsigned txlen, uint8_t *rx, unsigned rxlen)
++{
++	if (i2c_base == 0 || bus < 1 || bus > 6) {
++		return EINVAL;
++	}
++	lck_mtx_lock(&nx_i2c_lock);
++	int error = i2c_rs(i2c_base + i2c_off[bus - 1], addr, tx, txlen, rx, rxlen);
++	lck_mtx_unlock(&nx_i2c_lock);
++	return error;
++}
++
++/* ---- touchscreen (STM FTS4) ---- */
++
++#define FTS_BUS                 3
++#define FTS_ADDR                0x49
++#define FTS_EV_ENTER            0x03
++#define FTS_EV_LEAVE            0x04
++#define FTS_EV_MOTION           0x05
++#define FTS_EV_READY            0x10
++#define FTS_FINGERS             10
++
++static uint32_t touch_rot;
++static int touch_chan;
++
++static int
++fts_event_count(void)
++{
++	uint8_t cmd[3] = { 0xB6, 0x00, 0x23 }, buf[2];
++	return nx_i2c_rs(FTS_BUS, FTS_ADDR, cmd, 3, buf, 2) ? -1 : buf[1] >> 1;
++}
++
++static int
++fts_read_event(uint8_t ev[8])
++{
++	uint8_t cmd = 0x85;                     /* READ_ONE_EVENT */
++	return nx_i2c_rs(FTS_BUS, FTS_ADDR, &cmd, 1, ev, 8);
++}
++
++static int
++fts_cmd(const uint8_t *c, unsigned len)
++{
++	return nx_i2c_xfer(FTS_BUS, FTS_ADDR, c, len, NULL, 0);
++}
++
++static void
++touch_sleep(uint32_t ms)
++{
++	uint64_t deadline;
++	clock_interval_to_deadline(ms, NSEC_PER_MSEC, &deadline);
++	(void)assert_wait_deadline(&touch_chan, THREAD_UNINT, deadline);
++	thread_block(THREAD_CONTINUE_NULL);
++}
++
++/* Raw landscape position -> portrait panel pixel (hekate's edge compensation). */
++static void
++fts_map(uint32_t rx, uint32_t ry, int *px, int *py)
++{
++	rx = rx < 15 ? 15 : (rx > 1264 ? 1264 : rx);
++	ry = ry < 15 ? 15 : (ry > 704 ? 704 : ry);
++	uint32_t tx = (rx - 15) * 1280 / (1264 - 15);           /* 0..1279 */
++	uint32_t ty = (ry - 15) * 720 / (704 - 15);             /* 0..719 */
++	if (tx > 1279) {
++		tx = 1279;
++	}
++	if (ty > 719) {
++		ty = 719;
++	}
++	int x = 719 - (int)ty, y = (int)tx;
++	if (touch_rot & 4) {                                    /* swap, scaled to the other axis */
++		int nx = y * 720 / 1280, ny = x * 1280 / 720;
++		x = nx;
++		y = ny;
++	}
++	if (touch_rot & 1) {
++		x = 719 - x;
++	}
++	if (touch_rot & 2) {
++		y = 1279 - y;
++	}
++	*px = x;
++	*py = y;
++}
++
++static void
++touch_thread(__unused void *arg, __unused wait_result_t wr)
++{
++	static const uint8_t reset[4] = { 0xB6, 0x00, 0x28, 0x80 };
++	static const uint8_t finger_mode[2] = { 0xC3, 0x01 }, sense_on[1] = { 0x93 }, clear[1] = { 0xA1 };
++	int down[FTS_FINGERS] = { 0 }, lastx[FTS_FINGERS] = { 0 }, lasty[FTS_FINGERS] = { 0 };
++	unsigned logged = 0, errors = 0;
++	uint8_t ev[8];
++	int ready = 0;
++
++	int error = fts_cmd(reset, sizeof(reset));
++	for (int i = 0; !error && i < 40 && !ready; i++) {         /* up to 200 ms */
++		touch_sleep(5);
++		while (fts_event_count() > 0 && fts_read_event(ev) == 0) {
++			if (ev[0] == FTS_EV_READY) {
++				ready = 1;
++			}
++		}
++	}
++	if (!error) {
++		error = fts_cmd(finger_mode, sizeof(finger_mode));
++	}
++	if (!error) {
++		error = fts_cmd(sense_on, sizeof(sense_on));
++	}
++	if (!error) {
++		error = fts_cmd(clear, sizeof(clear));
++	}
++	printf("NX TOUCH: reset %s, sensing %s (error %d), rotation %u\n",
++	    ready ? "ready" : "NO READY EVENT", error ? "FAILED" : "on", error, touch_rot);
++	if (error) {
++		return;
++	}
++	for (;;) {
++		int n = fts_event_count();
++		if (n < 0) {
++			if ((errors++ % 500u) == 0) {
++				printf("NX TOUCH: I2C read error\n");
++			}
++		}
++		for (int i = 0; i < n && i < 16; i++) {
++			if (fts_read_event(ev)) {
++				break;
++			}
++			uint32_t id = ev[0] & 0xFu, f = ev[0] >> 4;
++			if ((id != FTS_EV_ENTER && id != FTS_EV_MOTION && id != FTS_EV_LEAVE) || f >= FTS_FINGERS) {
++				continue;
++			}
++			uint32_t rx = (uint32_t)ev[1] << 4 | ev[3] >> 4;
++			uint32_t ry = (uint32_t)ev[2] << 4 | (ev[3] & 0xFu);
++			int x = lastx[f], y = lasty[f];
++			if (id != FTS_EV_LEAVE) {
++				fts_map(rx, ry, &x, &y);
++				lastx[f] = x;
++				lasty[f] = y;
++			}
++			int d = id != FTS_EV_LEAVE;
++			if (logged < 20 && (d != down[f] || id == FTS_EV_ENTER)) {
++				logged++;
++				printf("NX TOUCH: finger %u %s raw %u,%u -> panel %d,%d\n", f,
++				    id == FTS_EV_ENTER ? "enter" : id == FTS_EV_LEAVE ? "leave" : "move", rx, ry, x, y);
++			}
++			down[f] = d;
++			sweet_hid_touch((int)f, d, x, y);
++		}
++		touch_sleep(10);
++	}
++}
++
+ static void
+ keys_wait(void)
+ {
+@@ -223,6 +450,25 @@ nx_input_start(void)
+ 	if (kernel_thread_start(keys_thread, NULL, &thread) == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
+ 	}
++
++	uint32_t touch = 1;
++	(void)PE_parse_boot_argn("nxtouch", &touch, sizeof(touch));
++	(void)PE_parse_boot_argn("nxtouchrot", &touch_rot, sizeof(touch_rot));
++	if (!touch) {
++		printf("NX TOUCH: disabled (nxtouch=0)\n");
++		return;
++	}
++	uint8_t cmd[3] = { 0xB6, 0x00, 0x04 }, info[7] = { 0 };
++	int terr = nx_i2c_rs(FTS_BUS, FTS_ADDR, cmd, 3, info, 7);
++	uint32_t chip = (uint32_t)info[1] << 8 | info[2];
++	printf("NX TOUCH: chip %#x fw %#x (err %d)\n", chip, (uint32_t)info[3] << 8 | info[4], terr);
++	if (terr || chip != 0x3670) {
++		printf("NX TOUCH: no STM FTS4 touchscreen (did shim-nx power it?)\n");
++		return;
++	}
++	if (kernel_thread_start(touch_thread, NULL, &thread) == KERN_SUCCESS) {
++		thread_deallocate(thread);
++	}
+ }
+ 
+ #else /* !NX_SWITCH */
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index a30c47a..2691b90 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -1336,6 +1336,56 @@ AppleCLCD::directPresent(const uint8_t *rec)
+ 	return ok;
+ }
+ 
++#if defined(NX_SWITCH)
++/*
++ * Nintendo Switch: the 750x1334 iPhone 8 screen is scaled onto the 720x1280
++ * panel (0.960 x 0.9595, nearest neighbour) instead of cropped: every panel
++ * pixel takes the logical pixel nx_lx[px], nx_ly[py]. SweetHID.cpp maps touch
++ * the same way (panel x / 720, y / 1280).
++ */
++static uint16_t nx_lx[1024], nx_ly[2048];
++static uint32_t nx_lut_w, nx_lut_h;
++
++static void
++nx_scaled_layer(uint8_t *dst, uint32_t dstStride, uint32_t pw, uint32_t ph, uint32_t lw, uint32_t lh,
++    uintptr_t src, uint32_t srcStride, int32_t sx, int32_t sy, int32_t dx, int32_t dy, int32_t w, int32_t h)
++{
++	if (pw > sizeof(nx_lx) / sizeof(nx_lx[0]) || ph > sizeof(nx_ly) / sizeof(nx_ly[0])) {
++		return;
++	}
++	if (nx_lut_w != pw || nx_lut_h != ph) {
++		for (uint32_t x = 0; x < pw; x++) {
++			nx_lx[x] = (uint16_t)((uint64_t)x * lw / pw);
++		}
++		for (uint32_t y = 0; y < ph; y++) {
++			nx_ly[y] = (uint16_t)((uint64_t)y * lh / ph);
++		}
++		nx_lut_w = pw;
++		nx_lut_h = ph;
++	}
++	/* panel columns whose logical x falls in [dx, dx + w) */
++	uint32_t px0 = 0, px1 = 0;
++	while (px0 < pw && nx_lx[px0] < dx) {
++		px0++;
++	}
++	px1 = px0;
++	while (px1 < pw && nx_lx[px1] < dx + w) {
++		px1++;
++	}
++	for (uint32_t py = 0; py < ph; py++) {
++		int32_t ly = nx_ly[py];
++		if (ly < dy || ly >= dy + h) {
++			continue;
++		}
++		const uint32_t *srow = (const uint32_t *)(src + (uint64_t)(sy + ly - dy) * srcStride);
++		uint32_t *drow = (uint32_t *)(dst + (uint64_t)py * dstStride);
++		for (uint32_t px = px0; px < px1; px++) {
++			drow[px] = srow[sx + nx_lx[px] - dx];
++		}
++	}
++}
++#endif
++
+ void
+ AppleCLCD::present(const uint8_t *rec)
+ {
+@@ -1422,6 +1472,30 @@ AppleCLCD::present(const uint8_t *rec)
+ 		if (dx < 0 || dy < 0) {
+ 			dx = dy = 0;
+ 		}
++#if defined(NX_SWITCH)
++		/* Scaled, not cropped: clip in logical coordinates, then nx_scaled_layer. */
++		if (w > (int32_t)s->width - sx) {
++			w = (int32_t)s->width - sx;
++		}
++		if (h > (int32_t)s->height - sy) {
++			h = (int32_t)s->height - sy;
++		}
++		if (w > (int32_t)fLogicalW - dx) {
++			w = (int32_t)fLogicalW - dx;
++		}
++		if (h > (int32_t)fLogicalH - dy) {
++			h = (int32_t)fLogicalH - dy;
++		}
++		{
++			uint64_t last = (uint64_t)s->offset + (uint64_t)(sy + h - 1) * s->bytesPerRow +
++			    (uint64_t)(sx + w) * 4;
++			if (src != 0 && bpe == 4 && w > 0 && h > 0 && s->elementWidth == 1 && s->elementHeight == 1 &&
++			    s->memory != NULL && last <= s->memory->getLength()) {
++				nx_scaled_layer(dst, fRowBytes, fWidth, fHeight, fLogicalW, fLogicalH,
++				    src + s->offset, s->bytesPerRow, sx, sy, dx, dy, w, h);
++			}
++		}
++#else
+ 		/* Logical (presented) display coordinates -> panel coordinates. */
+ 		dx -= fOffX;
+ 		dy -= fOffY;
+@@ -1460,6 +1534,7 @@ AppleCLCD::present(const uint8_t *rec)
+ 				    (size_t)w * 4);
+ 			}
+ 		}
++#endif /* NX_SWITCH */
+ 		s->release();
+ 	}
+ 	if (fFlip[0] != NULL) {
+diff --git a/iokit/Kernel/arm/hid/SweetHID.cpp b/iokit/Kernel/arm/hid/SweetHID.cpp
+index 445a65e..908ed74 100644
+--- a/iokit/Kernel/arm/hid/SweetHID.cpp
++++ b/iokit/Kernel/arm/hid/SweetHID.cpp
+@@ -357,11 +357,15 @@ OSDefineMetaClassAndStructors(SweetHIDButtons, IOHIDEventService);
+  */
+ #define SWEET_TOUCH_EDGE_PX 48
+ #if defined(NX_SWITCH)
+-/* Nintendo Switch: 720x1280 panel (6.2", ~77 x 137 mm) in a 750x1334 iPhone 8 screen */
++/*
++ * Nintendo Switch: 720x1280 panel (6.2", ~77 x 137 mm). The 750x1334 iPhone 8
++ * screen is scaled onto it (SweetFramebuffer.cpp nx_scaled_layer), so the
++ * normalized position is simply panel x / 720, y / 1280: logical = panel.
++ */
+ #define SWEET_TOUCH_PANEL_W     720
+ #define SWEET_TOUCH_PANEL_H     1280
+-#define SWEET_TOUCH_LOGICAL_W   750
+-#define SWEET_TOUCH_LOGICAL_H   1334
++#define SWEET_TOUCH_LOGICAL_W   720
++#define SWEET_TOUCH_LOGICAL_H   1280
+ #define SWEET_TOUCH_MM_W        77
+ #define SWEET_TOUCH_MM_H        137
+ #else
+-- 
+2.55.0
+

@@ -841,6 +841,9 @@ iOS space contiguous; never move/cross the emuMMC).
   nx_i2c_rs maps on first use; SweetBattery polls whenever sweetbattery=1,
   even if the first read fails, and logs `NX BATTERY: gauge read ok/failed
   (err)` on every change.
+  CI run 42314315356: success, 224 applied; kernel `work/ci-42314315356/`.
+  Test image `work/img-0977b-test/bl33.bin` (bf3f552d...) replaces the first
+  one in `switchroot/ios-test/` ("iOS NX (battery test)").
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

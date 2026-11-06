@@ -832,6 +832,15 @@ iOS space contiguous; never move/cross the emuMMC).
   CI run 42308392770: success, 224 applied; kernel `work/ci-42308392770/`.
   Test image `work/img-0977-test/bl33.bin` (a02dc939..., main cmdline) on
   the card as "iOS NX (battery test)" (`switchroot/ios-test/`).
+- **0977 first hardware test (log `work/ioslog-sd-battery.bin/.txt`)**: still
+  static 100%: `NX BATTERY: gauge not used (sweetbattery=1)` right after
+  `SWEET HID: touch registered`, no "I2C1 not clocked" line. Cause:
+  SweetBattery starts before nx_input_start maps the I2C block, and
+  `nx_i2c_rs` (unlike nx_i2c_xfer) didn't map it -> EINVAL on the probe, and
+  the driver then never polled again. **Fix (0977 replaced in place)**:
+  nx_i2c_rs maps on first use; SweetBattery polls whenever sweetbattery=1,
+  even if the first read fails, and logs `NX BATTERY: gauge read ok/failed
+  (err)` on every change.
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

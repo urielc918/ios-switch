@@ -1,16 +1,16 @@
-From 79342fc958ecca2441f501ebb49172c096142b4c Mon Sep 17 00:00:00 2001
+From 8a25f0d374c997393d67b03b88a6244406dba6a7 Mon Sep 17 00:00:00 2001
 From: x <x@x>
 Date: Fri, 6 Nov 2026 14:56:25 -0800
 Subject: [PATCH] nx-0977: real battery from the MAX17050 fuel gauge and
  BQ24193 charger (I2C1), boot-arg sweetbattery=0 for the static fallback
 
 ---
- bsd/dev/nx_input.c                | 73 ++++++++++++++++++++++++
- iokit/Kernel/arm/SweetBattery.cpp | 93 ++++++++++++++++++++++++++-----
- 2 files changed, 153 insertions(+), 13 deletions(-)
+ bsd/dev/nx_input.c                | 76 ++++++++++++++++++++++++
+ iokit/Kernel/arm/SweetBattery.cpp | 99 +++++++++++++++++++++++++++----
+ 2 files changed, 162 insertions(+), 13 deletions(-)
 
 diff --git a/bsd/dev/nx_input.c b/bsd/dev/nx_input.c
-index b8ef99d..8f770e6 100644
+index b8ef99d..162f415 100644
 --- a/bsd/dev/nx_input.c
 +++ b/bsd/dev/nx_input.c
 @@ -29,6 +29,7 @@ void nx_input_start(void);
@@ -21,7 +21,17 @@ index b8ef99d..8f770e6 100644
  void nx_sdmmc_log_final(void);          /* bsd/dev/nx_sdmmc.c */
  
  #if defined(NX_SWITCH)
-@@ -562,6 +563,72 @@ nx_halt_restart(int restart)
+@@ -235,6 +236,9 @@ out:
+ static int
+ nx_i2c_rs(unsigned bus, uint8_t addr, const uint8_t *tx, unsigned txlen, uint8_t *rx, unsigned rxlen)
+ {
++	if (i2c_base == 0) {
++		i2c_base = ml_io_map(I2C_PA, 0x2000);   /* first use may come before nx_input_start (battery) */
++	}
+ 	if (i2c_base == 0 || bus < 1 || bus > 6) {
+ 		return EINVAL;
+ 	}
+@@ -562,6 +566,72 @@ nx_halt_restart(int restart)
  	return -1;
  }
  
@@ -94,7 +104,7 @@ index b8ef99d..8f770e6 100644
  /* Called once from IOFindBSDRoot (iokit/bsddev/IOKitBSDInit.cpp). */
  void
  nx_input_start(void)
-@@ -639,4 +706,10 @@ nx_halt_restart(__unused int restart)
+@@ -639,4 +709,10 @@ nx_halt_restart(__unused int restart)
  	return -1;
  }
  
@@ -106,7 +116,7 @@ index b8ef99d..8f770e6 100644
 +
  #endif /* NX_SWITCH */
 diff --git a/iokit/Kernel/arm/SweetBattery.cpp b/iokit/Kernel/arm/SweetBattery.cpp
-index 5442d7e..ea699b2 100644
+index 5442d7e..04afdd5 100644
 --- a/iokit/Kernel/arm/SweetBattery.cpp
 +++ b/iokit/Kernel/arm/SweetBattery.cpp
 @@ -20,6 +20,9 @@ extern "C" int sweet_i2c1_init(void);
@@ -207,7 +217,7 @@ index 5442d7e..ea699b2 100644
  		    percent, mv, external, charging);
  		fLastMode = mode;
  	}
-@@ -369,12 +383,58 @@ SweetBattery::pollTopaz(void)
+@@ -369,12 +383,64 @@ SweetBattery::pollTopaz(void)
  	return true;
  }
  
@@ -222,7 +232,13 @@ index 5442d7e..ea699b2 100644
 +SweetBattery::pollNX(void)
 +{
 +	uint32_t v[8];
-+	if (nx_battery_read(v) != 0) {
++	int error = nx_battery_read(v);
++	static int lastError;
++	if (error != lastError) {
++		IOLog("NX BATTERY: gauge read %s (%d)\n", error ? "failed" : "ok", error);
++		lastError = error;
++	}
++	if (error != 0) {
 +		return false;
 +	}
 +	unsigned percent = v[0], mv = v[1];
@@ -266,7 +282,7 @@ index 5442d7e..ea699b2 100644
  	if (fReal) {
  		publish(100, 4200, 0, true, true, false, true, false, false);
  		return;
-@@ -436,8 +496,15 @@ SweetBattery::start(IOService *provider)
+@@ -436,8 +502,15 @@ SweetBattery::start(IOService *provider)
  		return false;
  	}
  #if defined(NX_SWITCH)
@@ -275,9 +291,9 @@ index 5442d7e..ea699b2 100644
 +	/* Nintendo Switch: MAX17050 gauge by default; sweetbattery=0 for the static fallback. */
 +	int real = 1;
 +	(void)PE_parse_boot_argn("sweetbattery", &real, sizeof(real));
-+	uint32_t probe[8];
++	/* Poll even if the first read fails (static values until one works). */
 +	fSource = "MAX17050 fuel gauge";
-+	fReal = real == 1 && nx_battery_read(probe) == 0;
++	fReal = real == 1;
 +	if (!fReal) {
 +		IOLog("NX BATTERY: gauge not used (sweetbattery=%d)\n", real);
 +	}

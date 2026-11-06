@@ -583,6 +583,11 @@ cpus=4 to test PSCI + the EL2 drop + SGIs.
   GICv2 + vtimer (heartbeat = select() timeouts = timer IRQs), IOKit,
   SweetCPU (cpus=1), mockfs root, exec of a static arm64 Mach-O, syscalls
   and the console.
+- cpus=4 test image (`work/sdcard-init-smp/`, bl33.bin SHA-256
+  4941834a...) copied to the card; the working cpus=1 image is kept as
+  `switchroot/ios/bl33-cpus1.bin`. (That time the card didn't auto-mount;
+  `udisksctl mount -b /dev/sdc1` does it without sudo. The card stays
+  mounted: the user asked not to unmount after writing.)
 - 0968 boot: after VOL+ the screen went **black** and stayed black. Cause:
   the cmdline from `nx-sdcard.sh` lacked **`serial=3`**. The SWEET text
   console (fbcon from `/sweet-fbcon`) is registered as a serial device

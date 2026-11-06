@@ -548,6 +548,9 @@ iOS space contiguous; never move/cross the emuMMC).
   **fb x = 719 - ty, fb y = tx**; boot-arg `nxtouchrot` 1 flip x, 2 flip y,
   4 swap; `nxtouch=0` off. The first 20 transitions are logged with raw and
   panel coordinates for calibration.
+- CI run 42179750051 (0972): success, 219 applied; kernel in
+  `work/ci-42179750051/`. bl33.bin (no sweetfb_stayon, SHA-256 4bcceeec...)
+  copied to the card (left mounted).
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

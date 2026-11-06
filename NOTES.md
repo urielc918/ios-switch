@@ -714,7 +714,14 @@ iOS space contiguous; never move/cross the emuMMC).
     flags: 0x8` (RB_HALT), `vfs_unmountall(system) end`, `CPU halted`,
     `NX POWER: shutdown requested -> restart to hekate`. So bl31's R2P
     path works from XNU and the final SD log flush works.
-  - Not yet tried: volume down (RCM).
+  - Volume down (RCM): not tested; the user says **AutoRCM is installed**,
+    so every normal power-on goes to RCM anyway (send hekate with OmniRCM).
+  - **0974 is the main image** (2026-11-06): `switchroot/ios/bl33.bin` =
+    6fe1c5ae... (proven shim + 0974 payload, nxtimeoff=847272720); previous
+    main kept as `bl33-0973.bin` (f03ce775...). The "iOS NX (test)" entry
+    and `switchroot/ios-test/` were removed. A rebuild with nx-sdcard.sh
+    needs the 0974 kernel: `work/ci-42276661937/kernel.development.sweet`
+    (note: its shim would come from clang 23, untested; see Session 4).
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

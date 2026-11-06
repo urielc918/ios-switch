@@ -738,6 +738,12 @@ iOS space contiguous; never move/cross the emuMMC).
   partition start and logs `NX SD: bench ... KB/s at X MHz`. The card line
   now ends with `high speed 48.0 MHz` or `default speed 24.7 MHz`.
   Theoretical: 4 bits x 24.7 MHz = 12.4 MB/s -> 24 MB/s (PIO overhead aside).
+  CI run 42281782000: success, 222 applied; kernel `work/ci-42281782000/`.
+  Test images (proven shim + 0975 payload, cmdline of the 0974 main image +):
+  `work/img-0975/test/bl33.bin` (cd9a7016..., `sdbench=16`) for
+  `switchroot/ios-test/` "iOS NX (SD test)", and `work/img-0975/base/bl33.bin`
+  (8c08ec13..., `sdhs=0 sdbench=16`) for `switchroot/ios-base/`
+  "iOS NX (SD baseline)". Not on the card yet (card was unplugged).
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

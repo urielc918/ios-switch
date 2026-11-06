@@ -395,6 +395,24 @@ iOS space contiguous; never move/cross the emuMMC).
 - CI run 42169570455 (0969): success, 216 patches applied. Kernel
   `work/ci-42169570455/` contains `PANIC (NX SD LOG)`. Full-iOS bl33.bin
   (SHA-256 7414ab8d...) copied to the card (left mounted).
+- **Second iOS-root boot (0969 kernel): the panic hook works.** The log
+  (`logs/ioslog-2.bin` -> `.txt`, 119 lines) shows `jnl: replay_journal ...
+  journal replay done` (after the previous panic), `hfs: mounted iOSRoot on
+  device b(1, 0)`, `SWEET: root volume is not authenticated (error 25);
+  continuing unsealed`, `load_init_program: attempting to load
+  /sbin/launchd`, then **`*** PANIC (NX SD LOG): unexpected SIGKILL of
+  launchd (CS_KILLED) with reason -- namespace 9 code 0xe`** = OS_REASON_EXEC
+  / **EXEC_EXIT_REASON_WRONG_PLATFORM**: kern_exec.c (XNU_TARGET_OS_OSX,
+  this is the macOS configuration) only execs PLATFORM_IOS binaries with
+  the no-sandbox entitlement or boot-arg **`unentitled_ios_sim_launch=1`**.
+  topaz's userland cmdline (ios-topaz README): `debug=0xc serial=3 cpus=4
+  keepsyms=1 -noprogress rd=ufsroot0 unentitled_ios_sim_launch=1
+  ignition_level=1 wdt_test=no_user_checkin ufsrw=1 rootrw=1
+  launchd_unsecure_cache=1 wdt=-1 sweetfb_noconsole=1 sweetfb_hz=30`.
+  `nx-sdcard.sh` SD-root default is now `... rd=sdroot0 sdrw=1 rootrw=1
+  unentitled_ios_sim_launch=1 ignition_level=1 launchd_unsecure_cache=1
+  wdt=-1 wdt_test=no_user_checkin` (+ sdlog=1 with --log). Built in
+  `work/sdcard-ios/`, not yet on the card.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/
   fsck.hfsplus) and gptfdisk (sgdisk); the kernel has `hfsplus.ko`.
   sudo needs the user's password: they run sudo steps in their terminal.

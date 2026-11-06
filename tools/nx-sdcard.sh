@@ -51,9 +51,13 @@ fi
 if [ -n "$ramdisk" ]; then
 	cmdline="$cmdline cpus=$cpus rd=md0"
 else
-	# The ios partition is iOS's own: writable root (rootrw=1, topaz 0031) on a
-	# writable device (sdrw=1), and launchd's job cache without AMFI, as topaz.
-	cmdline="$cmdline cpus=$cpus rd=sdroot0 sdrw=1 rootrw=1 launchd_unsecure_cache=1"
+	# The iOS root, with topaz's userland boot-args (ios-topaz README):
+	# writable root (rootrw=1, topaz 0031) on a writable device (sdrw=1);
+	# unentitled_ios_sim_launch=1: this is XNU's macOS configuration, which only
+	# execs iOS-platform binaries with it (else EXEC_EXIT_REASON_WRONG_PLATFORM);
+	# ignition_level=1 (dyld finds the shared cache under /System/Library/Caches);
+	# launchd's job cache without AMFI; no watchdog.
+	cmdline="$cmdline cpus=$cpus rd=sdroot0 sdrw=1 rootrw=1 unentitled_ios_sim_launch=1 ignition_level=1 launchd_unsecure_cache=1 wdt=-1 wdt_test=no_user_checkin"
 fi
 python3 "$TREE/tools/mkadt-nx.py" "$work/nx.adt" --cpus 4
 python3 "$TREE/tools/mkpayload.py" "$kernel" "$work/nx.adt" "$work/payload.bin" \

@@ -705,7 +705,16 @@ iOS space contiguous; never move/cross the emuMMC).
   nxtimeoff=847272720). **On the card as a separate hekate entry**:
   `bootloader/ini/ios-nx-test.ini` "[iOS NX (test)]" ->
   `/switchroot/ios-test/` (bl31.bin = copy of ios/bl31.bin, bl33.bin =
-  0974). "iOS NX" still boots the 0973 image. Pending: hardware test.
+  0974). "iOS NX" still boots the 0973 image.
+- **0974 on hardware (2026-11-06 ~11:28 PST, log `work/ioslog-power.bin/.txt`)**:
+  - Power off (no volume key): **works** (user: the Switch turned off; that
+    boot's log was overwritten by the next one).
+  - Volume up at shutdown: **boots into hekate** (user). Log end:
+    `NX KEYS: volume-up down`, launchd `Will be calling reboot(2) with
+    flags: 0x8` (RB_HALT), `vfs_unmountall(system) end`, `CPU halted`,
+    `NX POWER: shutdown requested -> restart to hekate`. So bl31's R2P
+    path works from XNU and the final SD log flush works.
+  - Not yet tried: volume down (RCM).
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

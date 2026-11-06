@@ -575,6 +575,17 @@ iOS space contiguous; never move/cross the emuMMC).
   0972 build (with its nxtouchrot=3 cmdline) kept as
   `switchroot/ios/bl33-0972.bin`. Waiting for the test boot (RTC log line,
   boot time without the 30 s IORTC wait, touch without nxtouchrot).
+- **0973 on hardware (log 10)**: touch works with the kernel default
+  orientation (no nxtouchrot). The RTC read works: `NX RTC: 2000-01-01
+  13:38:23 (raw ctl 0 hour 0x41) = 946733903`, `offset 0 s -> 946733903`:
+  CONTROL = 0 (binary, 12-hour mode; hour 0x41 = PM 1 = 13h). **Horizon
+  keeps the MAX77620 counting from a 2000-01-01 base** and stores the real
+  time elsewhere; hekate's `timeoffset` is only `new_epoch - rtc_epoch`
+  from its own clock setting (reset when the RTC looks old), so 0x3840
+  isn't usable. The user still sees "1970" on the lock screen, although
+  clock_initialize_calendar takes PEGetUTCTimeOfDay = 946733903 (2000).
+  Pending: the exact weekday/date/time shown (Thursday Jan 1 = 1970,
+  Saturday Jan 1 = 2000) and the real time at that moment -> nxtimeoff.
 - **0973-nx-rtc (written, pushed, built; not yet tested on hardware)**:
   SweetPlatformExpert (NX) publishes resource "IORTC" (IOKitInitializeTime
   otherwise waits 30 s every boot) and overrides getGMTTimeOfDay = MAX77620

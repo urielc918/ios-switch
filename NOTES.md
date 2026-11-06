@@ -368,6 +368,11 @@ iOS space contiguous; never move/cross the emuMMC).
   rd=sdroot0 sdrw=1 rootrw=1 launchd_unsecure_cache=1` (no RAM disk). The
   last three are topaz's iOS-root args (`ufsrw=1 rootrw=1
   launchd_unsecure_cache=1`, ours with sdrw), now the default for SD roots.
+- **21:2x root image written to sdc3 `ios`** by the user (`nx-sd-writeroot.sh`,
+  "verified: /dev/sdc3 holds research/ipsw-8/ios16-root-d20ap-20H392.img").
+  Full-iOS `bl33.bin` (SHA-256 a5dc5162...) copied to the card; the
+  cpus=4 init build is kept as `switchroot/ios/bl33-init.bin` (also
+  `bl33-cpus1.bin`, `bl33-shim.bin`). Card left mounted.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/
   fsck.hfsplus) and gptfdisk (sgdisk); the kernel has `hfsplus.ko`.
   sudo needs the user's password: they run sudo steps in their terminal.

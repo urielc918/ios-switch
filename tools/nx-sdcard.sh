@@ -67,6 +67,11 @@ else
 	# Touch: the Nyx-derived default mapping is rotated 180 degrees on this
 	# Switch (a top-right tap arrived at the bottom left): flip both axes.
 	# (touch orientation is the kernel default since patch 0973)
+	# Clock (0973): the MAX77620 RTC counts from a 2000-01-01 base under Horizon;
+	# nxtimeoff = real UTC - RTC, measured 2026-11-06 (lock screen 6:06 AM PST
+	# = RTC 2000-01-01 14:06 vs real 2026-11-06 09:30 UTC; +-1 min). Stays
+	# valid until the RTC is reset (battery fully drained) or Horizon's clock changes it.
+	cmdline="$cmdline nxtimeoff=847221840"
 fi
 python3 "$TREE/tools/mkadt-nx.py" "$work/nx.adt" --cpus 4
 python3 "$TREE/tools/mkpayload.py" "$kernel" "$work/nx.adt" "$work/payload.bin" \

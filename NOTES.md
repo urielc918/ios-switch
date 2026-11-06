@@ -586,6 +586,16 @@ iOS space contiguous; never move/cross the emuMMC).
   clock_initialize_calendar takes PEGetUTCTimeOfDay = 946733903 (2000).
   Pending: the exact weekday/date/time shown (Thursday Jan 1 = 1970,
   Saturday Jan 1 = 2000) and the real time at that moment -> nxtimeoff.
+- **Clock reading (same 0973 kernel, second boot)**: lock screen "Jan 1
+  6:06 AM" at real 2026-11-06 01:30 PST (09:30 UTC). That is **2000, not
+  1970**: iOS's time zone is Pacific, so the RTC's 2000-01-01 13:38 UTC
+  (log 10 boot, ~09:02 UTC) shows as 5:38 AM, and 6:06 AM = 14:06 UTC
+  at 09:30 UTC: the same RTC - UTC difference on both boots (epoch 0
+  would show Dec 31 1969, 4 PM). "1970" was a guess, not what was shown.
+  **nxtimeoff = 1793957400 - 946735560 = 847221840 s** (+-1 min, from
+  minute-level readings), now in nx-sdcard.sh's SD-root default. Needs
+  a bl33.bin rebuild (cmdline only, same 0973 kernel; built: work/sdcard-ios,
+  SHA-256 dcef86b9...) and a copy to the card (card not mounted yet).
 - **0973-nx-rtc (written, pushed, built; not yet tested on hardware)**:
   SweetPlatformExpert (NX) publishes resource "IORTC" (IOKitInitializeTime
   otherwise waits 30 s every boot) and overrides getGMTTimeOfDay = MAX77620

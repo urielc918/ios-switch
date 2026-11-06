@@ -1,0 +1,289 @@
+From 79342fc958ecca2441f501ebb49172c096142b4c Mon Sep 17 00:00:00 2001
+From: x <x@x>
+Date: Fri, 6 Nov 2026 14:56:25 -0800
+Subject: [PATCH] nx-0977: real battery from the MAX17050 fuel gauge and
+ BQ24193 charger (I2C1), boot-arg sweetbattery=0 for the static fallback
+
+---
+ bsd/dev/nx_input.c                | 73 ++++++++++++++++++++++++
+ iokit/Kernel/arm/SweetBattery.cpp | 93 ++++++++++++++++++++++++++-----
+ 2 files changed, 153 insertions(+), 13 deletions(-)
+
+diff --git a/bsd/dev/nx_input.c b/bsd/dev/nx_input.c
+index b8ef99d..8f770e6 100644
+--- a/bsd/dev/nx_input.c
++++ b/bsd/dev/nx_input.c
+@@ -29,6 +29,7 @@ void nx_input_start(void);
+ int nx_i2c_xfer(unsigned bus, uint8_t addr, const uint8_t *wr, unsigned wlen, uint8_t *rd, unsigned rlen);
+ int nx_rtc_read(uint64_t *epoch);
+ int nx_halt_restart(int restart);
++int nx_battery_read(uint32_t v[8]);
+ void nx_sdmmc_log_final(void);          /* bsd/dev/nx_sdmmc.c */
+ 
+ #if defined(NX_SWITCH)
+@@ -562,6 +563,72 @@ nx_halt_restart(int restart)
+ 	return -1;
+ }
+ 
++/*
++ * Battery (SweetBattery.cpp under NX), read-only, as hekate's
++ * bdk/power/max17050.c and bq24193.c: MAX17050 fuel gauge at I2C1 0x36
++ * (16-bit little-endian registers; Rsense 5 mOhm x CGAIN 2 = 10 mOhm:
++ * capacity LSB 0.5 mAh, current LSB 156.25 uA, positive = charging) and
++ * BQ24193 charger at I2C1 0x6B, status register 0x08 (VBUS 7:6, CHRG 5:4,
++ * PG bit 2). hekate leaves I2C1 clocked and initialized (hw_init, not
++ * undone by hw_deinit); checked in the CAR first so an unclocked
++ * controller can't fault.
++ * v[0] percent, v[1] mV, v[2] mA (int), v[3] mAh now, v[4] mAh full,
++ * v[5] mAh design, v[6] temperature in 0.01 C (int), v[7] BQ24193 status.
++ */
++#define CAR_PA_BAT              0x60006000u
++#define CAR_RST_DEVICES_L       0x004u
++#define CAR_CLK_OUT_ENB_L       0x010u
++#define  CAR_L_I2C1             (1u << 12)
++#define FG_ADDR                 0x36
++#define CHG_ADDR                0x6B
++
++static int
++fg_reg(uint8_t reg, uint16_t *val)
++{
++	uint8_t b[2] = { 0, 0 };
++	int error = nx_i2c_rs(1, FG_ADDR, &reg, 1, b, 2);
++	*val = (uint16_t)(b[0] | b[1] << 8);
++	return error;
++}
++
++int
++nx_battery_read(uint32_t v[8])
++{
++	static int bus_ok = -1;
++	if (bus_ok < 0) {
++		vm_offset_t car = ml_io_map(CAR_PA_BAT, 0x1000);
++		uint32_t enb = car ? rd32(car + CAR_CLK_OUT_ENB_L) : 0, rst = car ? rd32(car + CAR_RST_DEVICES_L) : ~0u;
++		bus_ok = (enb & CAR_L_I2C1) && !(rst & CAR_L_I2C1);
++		if (!bus_ok) {
++			printf("NX BATTERY: I2C1 not clocked (CAR enb %#x rst %#x)\n", enb, rst);
++		}
++	}
++	if (!bus_ok) {
++		return ENXIO;
++	}
++	uint16_t soc, vcell, cur, repcap, fullcap, design, temp;
++	int error = fg_reg(0x06, &soc) || fg_reg(0x09, &vcell) || fg_reg(0x0A, &cur) ||
++	    fg_reg(0x05, &repcap) || fg_reg(0x10, &fullcap) || fg_reg(0x18, &design) ||
++	    fg_reg(0x08, &temp) ? EIO : 0;
++	if (error) {
++		return error;
++	}
++	uint8_t reg = 0x08, st = 0;
++	if (nx_i2c_rs(1, CHG_ADDR, &reg, 1, &st, 1)) {
++		st = 0;
++	}
++	unsigned pct = soc >> 8;
++	v[0] = pct > 100 ? 100 : pct;
++	v[1] = (uint32_t)(vcell >> 3) * 625 / 1000;
++	v[2] = (uint32_t)((int)(int16_t)cur * 15625 / 100000);
++	v[3] = repcap / 2u;
++	v[4] = fullcap / 2u;
++	v[5] = design / 2u;
++	v[6] = (uint32_t)((int)(int16_t)temp * 100 / 256);
++	v[7] = st;
++	return 0;
++}
++
+ /* Called once from IOFindBSDRoot (iokit/bsddev/IOKitBSDInit.cpp). */
+ void
+ nx_input_start(void)
+@@ -639,4 +706,10 @@ nx_halt_restart(__unused int restart)
+ 	return -1;
+ }
+ 
++int
++nx_battery_read(__unused uint32_t v[8])
++{
++	return ENXIO;
++}
++
+ #endif /* NX_SWITCH */
+diff --git a/iokit/Kernel/arm/SweetBattery.cpp b/iokit/Kernel/arm/SweetBattery.cpp
+index 5442d7e..ea699b2 100644
+--- a/iokit/Kernel/arm/SweetBattery.cpp
++++ b/iokit/Kernel/arm/SweetBattery.cpp
+@@ -20,6 +20,9 @@ extern "C" int sweet_i2c1_init(void);
+ extern "C" int sweet_cpufreq_max(void);    /* bsd/dev/sweet_cpufreq.c */
+ extern "C" int sweet_i2c1_read(uint8_t addr, uint8_t reg, uint8_t *buf, unsigned len);
+ extern "C" int sweet_i2c1_write(uint8_t addr, uint8_t reg, uint8_t val);
++#if defined(NX_SWITCH)
++extern "C" int nx_battery_read(uint32_t v[8]);  /* bsd/dev/nx_input.c: MAX17050 + BQ24193 */
++#endif
+ 
+ class SweetBattery : public IOPMPowerSource {
+ 	OSDeclareDefaultStructors(SweetBattery);
+@@ -33,12 +36,18 @@ private:
+ 	IOTimerEventSource *fTimer;
+ 	bool fTimerAdded, fRunning, fReal;
+ 	int fLastMode;
++	unsigned fMaxMah, fDesignMah;   /* published capacities (topaz: 5020 nominal) */
++	int fTempC100;                  /* centidegrees C */
++	bool fCritical;
++	unsigned fLowPolls;
++	const char *fSource;
+ 	void putNumber(const char *key, UInt32 value);
+ 	void putBool(const char *key, bool value);
+ 	void publish(unsigned percent, unsigned mv, int ma, bool external,
+ 	    bool capable, bool charging, bool full, bool measured, bool currentValid);
+ 	void poll(void);
+ 	bool pollTopaz(void);
++	bool pollNX(void);
+ 	static void timerFired(OSObject *owner, IOTimerEventSource *sender);
+ 	static IOReturn stopPolling(OSObject *owner, void *, void *, void *, void *);
+ 	static bool readWord(unsigned address, uint16_t *value);
+@@ -78,6 +87,11 @@ SweetBattery::init(OSDictionary *dictionary)
+ 		}
+ 	}
+ 	fLastMode = -1;
++	fMaxMah = fDesignMah = 5020;
++	fTempC100 = 2500;
++	fCritical = false;
++	fLowPolls = 0;
++	fSource = "PM6150 / estimated SOC";
+ 	return true;
+ }
+ 
+@@ -107,17 +121,17 @@ void
+ SweetBattery::publish(unsigned percent, unsigned mv, int ma, bool external,
+     bool capable, bool charging, bool full, bool measured, bool currentValid)
+ {
+-	/* Use consistent mAh units (DT nominal=5020). powerd computes C*100/M. */
+-	const unsigned capacity = (5020u * percent + 50u) / 100u;
++	/* Use consistent mAh units (topaz: DT nominal=5020; NX: the gauge's FullCAP). powerd computes C*100/M. */
++	const unsigned capacity = (fMaxMah * percent + 50u) / 100u;
+ 	setBatteryInstalled(true);
+ 	setCurrentCapacity(capacity);
+-	setMaxCapacity(5020);
++	setMaxCapacity(fMaxMah);
+ 	setExternalConnected(external);
+ 	setExternalChargeCapable(capable);
+ 	setIsCharging(charging);
+ 	setAtWarnLevel(false);
+-	/* An uncalibrated voltage curve must not assert a critical shutdown. */
+-	setAtCriticalLevel(false);
++	/* An uncalibrated voltage curve must not assert a critical shutdown (NX: gauge, see pollNX). */
++	setAtCriticalLevel(fCritical);
+ 	setVoltage(mv);
+ 	setAmperage(ma);
+ 	setTimeRemaining(-1); /* Unknown; never publish zero minutes on error. */
+@@ -125,11 +139,11 @@ SweetBattery::publish(unsigned percent, unsigned mv, int ma, bool external,
+ 	putBool("FullyCharged", full);
+ 	putBool("AppleRawExternalConnected", external);
+ 	putNumber("AppleRawCurrentCapacity", capacity);
+-	putNumber("AppleRawMaxCapacity", 5020);
+-	putNumber("DesignCapacity", 5020);
++	putNumber("AppleRawMaxCapacity", fMaxMah);
++	putNumber("DesignCapacity", fDesignMah);
+ 	putNumber("InstantAmperage", (UInt32)ma);
+-	/* iOS battery convention: centidegrees C; fixed 25 C, NOT measured. */
+-	putNumber("Temperature", 2500);
++	/* iOS battery convention: centidegrees C; fixed 25 C unless measured (NX gauge). */
++	putNumber("Temperature", (UInt32)fTempC100);
+ 	putBool("SweetBatteryHardwareSampleValid", measured);
+ 	putBool("SweetBatteryCurrentValid", currentValid);
+ 	putBool("SweetBatterySOCEstimated", measured);
+@@ -143,7 +157,7 @@ SweetBattery::publish(unsigned percent, unsigned mv, int ma, bool external,
+ 		const char *keys[] = {kIOBatteryCurrentChargeKey, kIOBatteryCapacityKey,
+ 		    kIOBatteryVoltageKey, kIOBatteryAmperageKey, kIOBatteryCycleCountKey,
+ 		    kIOBatteryFlagsKey};
+-		UInt32 values[] = {capacity, 5020, mv, (UInt32)ma, 0,
++		UInt32 values[] = {capacity, fMaxMah, mv, (UInt32)ma, 0,
+ 		    (UInt32)(kIOBatteryInstalled | (external ? kIOBatteryChargerConnect : 0) |
+ 		    (charging ? kIOBatteryCharge : 0))};
+ 		for (unsigned i = 0; i < sizeof(values) / sizeof(values[0]); ++i) {
+@@ -160,7 +174,7 @@ SweetBattery::publish(unsigned percent, unsigned mv, int ma, bool external,
+ 	int mode = measured ? 1 : 0;
+ 	if (mode != fLastMode) {
+ 		IOLog("SWEET BATTERY: %s, %u%% %umV external=%d charging=%d\n",
+-		    measured ? "PM6150 / estimated SOC" : "static fallback",
++		    measured ? fSource : "static fallback",
+ 		    percent, mv, external, charging);
+ 		fLastMode = mode;
+ 	}
+@@ -369,12 +383,58 @@ SweetBattery::pollTopaz(void)
+ 	return true;
+ }
+ 
++#if defined(NX_SWITCH)
++/*
++ * Nintendo Switch: MAX17050 fuel gauge (RepSOC, VCELL, Current, RepCap,
++ * FullCAP, DesignCap, TEMP) + BQ24193 status, via nx_battery_read. The
++ * gauge is Horizon's, calibrated, so a critical level is allowed: on
++ * battery, 0% or < 3300 mV in two polls in a row (20 s) lets powerd shut down.
++ */
++bool
++SweetBattery::pollNX(void)
++{
++	uint32_t v[8];
++	if (nx_battery_read(v) != 0) {
++		return false;
++	}
++	unsigned percent = v[0], mv = v[1];
++	int ma = (int)v[2];
++	if (mv < 2800 || mv > 4600 || v[4] < 1000 || v[4] > 10000) {
++		return false;
++	}
++	uint8_t st = (uint8_t)v[7];
++	unsigned vbus = (st >> 6) & 3u, chrg = (st >> 4) & 3u;
++	bool external = (st & 4u) && (vbus == 1 || vbus == 2);
++	bool charging = external && (chrg == 1 || chrg == 2);
++	bool done = external && chrg == 3;
++	fMaxMah = v[4];
++	fDesignMah = (v[5] >= 1000 && v[5] <= 10000) ? v[5] : v[4];
++	fTempC100 = (int)v[6];
++	fLowPolls = (!external && (percent == 0 || mv < 3300)) ? fLowPolls + 1 : 0;
++	fCritical = fLowPolls >= 2;
++	publish(done ? 100 : percent, mv, ma, external, external, charging, done, true, true);
++	static unsigned logs;
++	if (logs++ % 30 == 0 || fCritical) {
++		IOLog("NX BATTERY: %u%% %umV %dmA %u/%u mAh (design %u) %d.%02d C chg=%#x external=%d charging=%d%s\n",
++		    percent, mv, ma, v[3], v[4], v[5], fTempC100 / 100, (fTempC100 < 0 ? -fTempC100 : fTempC100) % 100,
++		    st, external, charging, fCritical ? " CRITICAL" : "");
++	}
++	return true;
++}
++#endif
++
+ void
+ SweetBattery::poll(void)
+ {
++#if defined(NX_SWITCH)
++	if (fReal && pollNX()) {
++		return;
++	}
++#else
+ 	if (fReal && pollTopaz()) {
+ 		return;
+ 	}
++#endif
+ 	if (fReal) {
+ 		publish(100, 4200, 0, true, true, false, true, false, false);
+ 		return;
+@@ -436,8 +496,15 @@ SweetBattery::start(IOService *provider)
+ 		return false;
+ 	}
+ #if defined(NX_SWITCH)
+-	/* Nintendo Switch: no Qualcomm CPU clock or fuel gauge; static fallback. */
+-	fReal = false;
++	/* Nintendo Switch: MAX17050 gauge by default; sweetbattery=0 for the static fallback. */
++	int real = 1;
++	(void)PE_parse_boot_argn("sweetbattery", &real, sizeof(real));
++	uint32_t probe[8];
++	fSource = "MAX17050 fuel gauge";
++	fReal = real == 1 && nx_battery_read(probe) == 0;
++	if (!fReal) {
++		IOLog("NX BATTERY: gauge not used (sweetbattery=%d)\n", real);
++	}
+ #else
+ 	(void)sweet_cpufreq_max();
+ 	int real = 1;   /* topaz: real gauge by default; sweetbattery=0 for the static fallback */
+-- 
+2.56.0
+

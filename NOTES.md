@@ -813,6 +813,22 @@ iOS space contiguous; never move/cross the emuMMC).
     cmdline, no sdbench); previous main kept as `bl33-0975.bin`
     (2e6d5232...). Test entry ios-nx-test and `switchroot/ios-test/` removed.
     Backups on the card: bl33-0975, bl33-0974, bl33-0973 (+ older).
+- **0977-nx-battery (written, syntax-checked, pushed for CI)**: real battery.
+  `nx_battery_read()` in nx_input.c, as hekate's bdk/power/max17050.c and
+  bq24193.c: MAX17050 at I2C1 0x36 (RepSOC 0x06 >> 8 = %, VCELL 0x09
+  (>> 3) x 0.625 mV, Current 0x0A s16 x 156.25 uA (+ = charging), RepCap
+  0x05 / FullCAP 0x10 / DesignCap 0x18 x 0.5 mAh, TEMP 0x08 s16 / 256 C;
+  Rsense 5 mOhm x CGAIN 2) read with repeated start (nx_i2c_rs), and
+  BQ24193 at 0x6B reg 0x08 (VBUS 7:6, CHRG 5:4, PG bit 2). First checks
+  CAR CLK_OUT_ENB_L (0x10) bit 12 set and RST_DEVICES_L (0x4) bit 12 clear
+  (hekate's hw_init enables I2C1; hw_deinit does not disable it).
+  SweetBattery.cpp (NX): gauge by default (`sweetbattery=0` = old static
+  100%), publishes FullCAP/DesignCap as Max/Design capacity (no more topaz
+  5020), measured temperature, external = PG && VBUS 1-2, charging = CHRG
+  1-2, full = CHRG 3; critical level (powerd may shut down) after 2 polls in
+  a row on battery with 0% or < 3300 mV. Poll every 10 s; log `NX BATTERY:
+  ...` every 30 polls (5 min) and at critical, plus `SWEET BATTERY:
+  MAX17050 fuel gauge, ...` once.
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

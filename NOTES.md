@@ -5,7 +5,8 @@ Goal: bring up XNU (xnu-8796, iOS 16 generation) on a Nintendo Switch
 approach. **Status 2026-11-05 night: XNU + the iOS 16 userland run on the
 Switch from the SD card; the iOS 16 lock screen runs on the panel (NX
 AppleCLCD, 0970) with touchscreen and buttons (0971/0972) and a (blue
-fallback) wallpaper; no RTC, Wi-Fi, audio or Joy-Con yet** (see "Hardware log"). Earlier the same day: design and
+fallback) wallpaper; no Wi-Fi, audio or Joy-Con yet; wall clock from the
+MAX77620 RTC + boot-arg `nxtimeoff` (0973, Session 4 in "Hardware log")**. Earlier the same day: design and
 fact-gathering done, no Switch-specific code written yet. Session 2 (same day) re-read hekate's
 L4T launcher for the BL33 handoff and fixed the `shim-nx/` design (see
 "Session 2" below). `shim-nx/` is now **written and builds, but has not
@@ -14,9 +15,10 @@ XNU loader to shim-nx and `tools/mkadt-nx.py` (see "Session 3").
 
 ## Where things are
 
-- Repo: `/home/j/2tbstorage/ios-switch` (git, branch `main`).
-  `/home/j/ios-switch` is meant to be a bind mount of it (not active yet:
-  `sudo mount --bind /home/j/2tbstorage/ios-switch /home/j/ios-switch`).
+- Repo: `/home/j/ios-switch` (git, branch `main`; fresh clone of
+  github.com/urielc918/ios-switch since 2026-11-06, the old
+  `/home/j/2tbstorage/ios-switch` copy is gone, so most of `work/` below is
+  gone too: re-fetch as needed).
 - Commit 1 imports **MakrSas/ios-topaz** `e4772911e116` as the base. It is
   a fork of dipa-studio/ios-sweet `45263bee51df` with an ARMv8.0 and
   4 KiB-page kernel (patches 0081, 0140, 0142), which the A57 needs.
@@ -596,6 +598,7 @@ iOS space contiguous; never move/cross the emuMMC).
   minute-level readings), now in nx-sdcard.sh's SD-root default. Needs
   a bl33.bin rebuild (cmdline only, same 0973 kernel; built: work/sdcard-ios,
   SHA-256 dcef86b9...) and a copy to the card (card not mounted yet).
+  **Superseded (Session 4): 14 h 08 min off; now nxtimeoff=847272720.**
 - **0973-nx-rtc (written, pushed, built; not yet tested on hardware)**:
   SweetPlatformExpert (NX) publishes resource "IORTC" (IOKitInitializeTime
   otherwise waits 30 s every boot) and overrides getGMTTimeOfDay = MAX77620
@@ -608,6 +611,61 @@ iOS space contiguous; never move/cross the emuMMC).
   User's hekate nyx.ini: `timeoffset=3840` (hex = 14400 s), `timedst=1`.
   PC time 2026-11-06 00:08 PST = 08:08 UTC. Next: boot 0973 once, compare
   the logged raw RTC time with real UTC, set `nxtimeoff` in nx-sdcard.sh.
+- **Session 4 (2026-11-06 04:2x-05:xx PST): verifying the clock fix.**
+  Fresh clone at `/home/j/ios-switch` (the 2tbstorage copy and the old
+  `work/` are gone on this machine; `work/` was rebuilt, see below).
+  - Review of 0973: RTC decode (12 h mode + PM bit 6, Hinnant
+    days_from_civil), `nxtimeoff` parsed as int64, RTC never written: OK.
+    The nxtimeoff arithmetic in the entry above also checks out.
+  - The card still had the 0973 bl33.bin **without** nxtimeoff
+    (3b6683f1...; the "nxtimeoff" string in it is the kernel's own). The
+    dcef86b9 rebuild was not on this machine. Appended
+    ` nxtimeoff=847221840` to the payload's fixed 608-byte cmdline
+    (payload at 0xe000, cmdline at +0x48; no checksum in shim-nx's
+    loader): 20 bytes changed -> 3a9f9416....
+  - Tools: `gh` 2.103.3 installed to `~/.local/bin` (release tarball,
+    checksum verified; sudo can't run from Claude's shell), logged in as
+    urielc918 (repo, workflow). Clang 23.1.3 installed by the user.
+    0973 kernel re-downloaded: `work/ci-42185554301/` (SHA256SUMS OK).
+    `nx-sdcard.sh work/sdcard-ios <kernel> --log` builds; its payload equals
+    the card's except the 64-byte ADT `random-seed` (os.urandom per build).
+    **The shim part differs** (0x516c vs 0x512c bytes; same source, so a
+    different clang): that build (d6113268...) is untested on hardware, so
+    the card keeps the proven shim and only the cmdline is patched.
+  - **Boot with nxtimeoff=847221840 (log `work/ioslog-rtc.bin/.txt`)**:
+    `NX RTC: 2000-01-01 03:01:21 (raw ctl 0x2 hour 0x3) = 946695681`,
+    `offset 847221840 s -> 1793917521` = 2026-11-05 14:25 PST. Lock screen
+    "2:31" (PM, Nov 5) at real 2026-11-06 04:39 AM PST: **14 h 08 min
+    (50880 s) behind**. CONTROL is now 0x2 (24-hour mode; it was 0 on log
+    10). Read at the time as an RTC reset at ~09:30 UTC (= when the previous
+    boot was switched off by holding power; the Switch stayed off until
+    ~04:30 PST). Neither hekate nor shim-nx writes CONTROL (hekate's
+    bdk/rtc/max77620-rtc.c only writes UPDATE0 and the alarm registers).
+  - User test: hekate's clock is **still right after a held-power off**
+    (charged battery), so a forced off does not reset the RTC.
+  - **New offset: nxtimeoff = 847221840 + 50880 = 847272720**
+    (nx-sdcard.sh updated). Independent check: the card's nyx.ini has
+    `timeoffset=327fea90` = 847243920 = local non-DST offset (hekate:
+    displayed = RTC epoch + timeoffset, DST +1 h only 28 Mar-28 Oct);
+    + 28800 (PST) = **847272720, identical**.
+  - **Open: what moved the RTC 14 h 08 min.** nyx.ini changed after 00:08
+    PST (was `timeoffset=3840`) but its FAT mtime reads 2026-11-05 20:09:50,
+    presumably stamped by hekate's own (then wrong) clock; it fits neither
+    "RTC reset at 09:30 UTC" nor "first offset misread" cleanly. Candidates:
+    a real RTC reset (low battery); the 12 h -> 24 h CONTROL change (log
+    10's hour 0x41 = 1 PM in 12 h mode; no known writer); a misread of the
+    6:06 AM screen. Ask the user when/how they set hekate's clock.
+  - hekate detail: `max77620_rtc_get_time` masks the hour with 0x1F before
+    testing the PM bit (bit 6), so in 12-hour mode hekate ignores PM; ours
+    adds 12. Same result in 24-hour mode (current CONTROL 0x2).
+  - **On the card now**: `switchroot/ios/bl33.bin` = proven 0973 image with
+    `nxtimeoff=847272720` (f03ce775...). Kept: `bl33-0973-off1.bin`
+    (847221840, 3a9f9416...), `bl33-0973-nooff.bin` (3b6683f1...).
+    **Booted: the lock screen clock is correct (user, 2026-11-06). Clock fix verified.**
+  - Use hekate as the reference from now on: **nxtimeoff = nyx.ini
+    timeoffset + 28800** (exact, no screen reading). After an RTC reset, set
+    the clock once in Nyx and recompute. Idea: let nx-sdcard.sh read it.
+  - `work/hekate`: shallow clone of CTCaer/hekate (RTC code reference).
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/
@@ -1069,6 +1127,10 @@ cpus=4 to test PSCI + the EL2 drop + SGIs.
    - SweetHID.cpp still assumes 1080x2400 (only matters once there is
      touch input).
 4. Later: touch (STM FTS over I2C), Joy-Con rails, GPU.
+5. Clock: ~~confirm the 847272720 boot~~ done (Session 4). Maybe derive
+   nxtimeoff from nyx.ini in nx-sdcard.sh, a proper power-off
+   (PEHaltRestart -> MAX77620 ONOFFCNFG1 0x41 bit 1) instead of holding
+   power, and NTP once Wi-Fi works.
 
 Licensing: repo MIT (from ios-sweet), XNU patches APSL 2.0. hekate is
 GPLv2: use it for register facts only, don't copy its code.

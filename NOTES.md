@@ -555,6 +555,9 @@ cpus=4 to test PSCI + the EL2 drop + SGIs.
   mass storage (Nyx Tools -> USB Tools -> SD Card): `bl33.bin` +
   `ios-nx.ini` verified with cmp; the earlier diagnostics shim was kept as
   `switchroot/ios/bl33-shim.bin` (copy it over bl33.bin to go back).
+- 19:55 the fusee-nano send reported success but the user saw no hekate; the
+  user then sent hekate with **OmniRCM** (their own tool) and it worked.
+  fusee-nano had worked at 13:47, so either can be used.
 - The CI ccache wrapper now bypasses ccache for `.s` inputs (as
   `tools/build-local.sh` already did): assembler files include the
   generated `assym.s`, which ccache doesn't hash, so stale struct offsets

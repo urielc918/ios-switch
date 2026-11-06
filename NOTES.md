@@ -373,6 +373,25 @@ iOS space contiguous; never move/cross the emuMMC).
   Full-iOS `bl33.bin` (SHA-256 a5dc5162...) copied to the card; the
   cpus=4 init build is kept as `switchroot/ios/bl33-init.bin` (also
   `bl33-cpus1.bin`, `bl33-shim.bin`). Card left mounted.
+- **First iOS-root boot (21:3x): kernel panic "at attempt to load
+  launchd"** (user's words; no photo). The `ioslog` log (user: `sudo dd
+  if=/dev/disk/by-partlabel/ioslog of=logs/ioslog-1.bin bs=1M count=5`,
+  decoded with `tools/sweet-log.py`, 112 lines, flush #2) shows all of
+  boot working: 4/4 CPUs, AMFI/Sandbox stand-ins, HFS, **`NX SD:
+  SDHC/SDXC card, 472288 MiB, RCA 0x5048`**, `NX SD LOG: ... block
+  0x36018000`, **`NX SD: "ios": first block 0x25620000, 136176 MiB,
+  read-write`**, **`BSD root: sdroot0`**, `hfs: Initializing the journal`,
+  `hfs: ... creating the hotfile btree` (so SD writes work) and then
+  nothing: the panic came within the 2 s flush interval.
+  Note: the 4K-page kernel had never run iOS userland at topaz either
+  (upstream README still calls 4K an experiment).
+  Fix for the log gap: **0969-nx-panic-log**. `panic_trap_to_debugger`
+  calls `nx_panic_log_hook` once, right after `sweet_early_panic`. nx_sdmmc
+  puts `*** PANIC (NX SD LOG): <message>` into the console ring and
+  flushes the log synchronously (shared `log_flush()`, no lock). A busy
+  flag in `sd_xfer` lets a transfer on another CPU finish (200 ms), else it
+  resets CMD/DAT; after a panic only the panicking CPU can start
+  transfers.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/
   fsck.hfsplus) and gptfdisk (sgdisk); the kernel has `hfsplus.ko`.
   sudo needs the user's password: they run sudo steps in their terminal.
@@ -433,7 +452,7 @@ HEAD), and so what the NX patches have to deal with:
 
 ## XNU NX patches (2026-11-05, not built yet)
 
-`xnu/patches/0960-0968-nx-*.patch` (0960-0967 first numbered 0200-0207, see "CI" for why they moved), made on branch `nx` of
+`xnu/patches/0960-0969-nx-*.patch` (0960-0967 first numbered 0200-0207, see "CI" for why they moved), made on branch `nx` of
 `work/xnu-src/xnu` (`master` = pristine + topaz series, unchanged).
 Checked: all eight apply in order with `git apply --check` on a `master`
 worktree, and the result is identical to `nx`. **Not compiled**: XNU only

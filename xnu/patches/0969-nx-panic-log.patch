@@ -1,0 +1,298 @@
+From e735050959e12a93513b70596c56400af4bec485 Mon Sep 17 00:00:00 2001
+From: x <x@x>
+Date: Thu, 5 Nov 2026 21:37:56 -0800
+Subject: [PATCH] nx-0969: panic writes the console log (with the panic
+ message) to the SD ioslog partition synchronously
+
+---
+ bsd/dev/nx_sdmmc.c | 188 +++++++++++++++++++++++++++++++++------------
+ osfmk/kern/debug.c |  12 +++
+ 2 files changed, 151 insertions(+), 49 deletions(-)
+
+diff --git a/bsd/dev/nx_sdmmc.c b/bsd/dev/nx_sdmmc.c
+index e47c1e5..575b0ad 100644
+--- a/bsd/dev/nx_sdmmc.c
++++ b/bsd/dev/nx_sdmmc.c
+@@ -25,6 +25,7 @@
+ #include <sys/param.h>
+ #include <sys/types.h>
+ #include <sys/errno.h>
++#include <stdarg.h>
+ 
+ int nx_sdmmc_rootdev(dev_t *dev);
+ void nx_sdmmc_log_start(void);
+@@ -41,6 +42,7 @@ void nx_sdmmc_log_start(void);
+ #include <kern/clock.h>
+ #include <kern/kalloc.h>
+ #include <kern/sched_prim.h>
++#include <kern/cpu_number.h>
+ #include <machine/machine_routines.h>
+ #include <pexpert/pexpert.h>
+ #include <pexpert/device_tree.h>
+@@ -54,6 +56,9 @@ extern int hz;
+ /* bsd/dev/sweet_ufs.c: the console ring every SWEET kernel keeps */
+ extern uint32_t sweet_log_copy(uint64_t *pos, char *out, uint32_t max);
+ extern uint64_t sweet_log_position(void);
++extern void sweet_log_append(const char *c, int size);
++/* osfmk/kern/debug.c (NX): called once at the start of panic_trap_to_debugger */
++extern void (*nx_panic_log_hook)(const char *fmt, va_list *args);
+ 
+ /* SDHCI standard registers */
+ #define SD_BLKSIZE      0x04    /* 16 */
+@@ -444,9 +449,33 @@ card_init(void)
+ 	return 0;
+ }
+ 
+-/* PIO transfer of n blocks at card block lba to/from buf. */
++/*
++ * A panic flushes the console log from whatever CPU panics, without the lock
++ * (another CPU may hold it, or be in the middle of a transfer): sd_active says
++ * a transfer is running, and after a panic only the panicking CPU may start
++ * new ones.
++ */
++static volatile int sd_active;
++static volatile int sd_panicked;
++static volatile int sd_panic_cpu = -1;
++
++static int sd_xfer_raw(uint64_t lba, uint32_t n, uint8_t *buf, bool write);
++
+ static int
+ sd_xfer(uint64_t lba, uint32_t n, uint8_t *buf, bool write)
++{
++	if (sd_panicked && cpu_number() != sd_panic_cpu) {
++		return EIO;
++	}
++	__atomic_store_n(&sd_active, 1, __ATOMIC_SEQ_CST);
++	int error = sd_xfer_raw(lba, n, buf, write);
++	__atomic_store_n(&sd_active, 0, __ATOMIC_SEQ_CST);
++	return error;
++}
++
++/* PIO transfer of n blocks at card block lba to/from buf. */
++static int
++sd_xfer_raw(uint64_t lba, uint32_t n, uint8_t *buf, bool write)
+ {
+ 	if (n == 0 || n > CHUNK_BLOCKS || lba + n > sd.card_blocks) {
+ 		return EINVAL;
+@@ -828,6 +857,8 @@ static struct {
+ 	uint8_t *hdr;                           /* one sector */
+ 	uint32_t secs;
+ 	int chan;
++	uint64_t flushed, seq;                  /* stream position on the card, header count */
++	volatile int panicking;
+ } lg;
+ 
+ struct nx_log_header {
+@@ -856,65 +887,123 @@ log_write_range(uint32_t a, uint32_t b)
+ 	return 0;
+ }
+ 
++/*
++ * Copy console bytes [lg.flushed, now) into the shadow, write the changed
++ * sectors and then the header. Caller holds the lock, or is the panic path.
++ */
++static int
++log_flush(char *tmp, uint32_t tmpsz)
++{
++	uint64_t total = sweet_log_position();
++	if (total == lg.flushed) {
++		return 0;
++	}
++	uint64_t pos = lg.flushed, start = ~0ull;
++	uint32_t n;
++	while ((n = sweet_log_copy(&pos, tmp, tmpsz)) > 0) {
++		uint64_t at = pos - n;          /* sweet_log_copy may skip ahead */
++		if (start == ~0ull) {
++			start = at;
++		}
++		for (uint32_t i = 0; i < n; i++) {
++			lg.shadow[(at + i) % LOG_RING] = (uint8_t)tmp[i];
++		}
++	}
++	int error = 0;
++	if (start != ~0ull) {
++		if (pos - start >= LOG_RING) {
++			error = log_write_range(0, LOG_RING);
++		} else {
++			uint32_t a = (uint32_t)(start % LOG_RING), b = (uint32_t)(pos % LOG_RING);
++			if (a < b) {
++				error = log_write_range(a, b);
++			} else {
++				error = log_write_range(a, LOG_RING);
++				if (!error && b) {
++					error = log_write_range(0, b);
++				}
++			}
++		}
++	}
++	if (!error) {
++		struct nx_log_header h = {
++			.magic = { 'S', 'W', 'E', 'E', 'T', 'L', 'O', 'G' },
++			.version = 1, .size = LOG_RING, .total = pos, .seq = ++lg.seq,
++		};
++		bzero(lg.hdr, SECTOR);
++		memcpy(lg.hdr, &h, sizeof(h));
++		error = sd_xfer(lg.first, 1, lg.hdr, true);
++	}
++	if (!error) {
++		lg.flushed = pos;
++	}
++	return error;
++}
++
+ static void
+ nx_sdmmc_log_thread(__unused void *arg, __unused wait_result_t wr)
+ {
+-	uint64_t flushed = 0, seq = 0;
+ 	char *tmp = (char *)kalloc_data(16384, Z_WAITOK);
+ 	if (tmp == NULL) {
+ 		return;
+ 	}
+ 	printf("NX SD LOG: console log to partition at block 0x%llx, every %u s\n", lg.first, lg.secs);
+-	for (;;) {
+-		uint64_t total = sweet_log_position();
+-		if (total != flushed) {
+-			uint64_t pos = flushed, start = ~0ull;
+-			uint32_t n;
+-			while ((n = sweet_log_copy(&pos, tmp, 16384)) > 0) {
+-				uint64_t at = pos - n;          /* sweet_log_copy may skip ahead */
+-				if (start == ~0ull) {
+-					start = at;
+-				}
+-				for (uint32_t i = 0; i < n; i++) {
+-					lg.shadow[(at + i) % LOG_RING] = (uint8_t)tmp[i];
+-				}
+-			}
+-			int error = 0;
+-			lck_mtx_lock(&nx_sdmmc_lock);
+-			if (start != ~0ull) {
+-				if (pos - start >= LOG_RING) {
+-					error = log_write_range(0, LOG_RING);
+-				} else {
+-					uint32_t a = (uint32_t)(start % LOG_RING), b = (uint32_t)(pos % LOG_RING);
+-					if (a < b) {
+-						error = log_write_range(a, b);
+-					} else {
+-						error = log_write_range(a, LOG_RING);
+-						if (!error && b) {
+-							error = log_write_range(0, b);
+-						}
+-					}
+-				}
+-			}
+-			if (!error) {
+-				struct nx_log_header h = {
+-					.magic = { 'S', 'W', 'E', 'E', 'T', 'L', 'O', 'G' },
+-					.version = 1, .size = LOG_RING, .total = pos, .seq = ++seq,
+-				};
+-				bzero(lg.hdr, SECTOR);
+-				memcpy(lg.hdr, &h, sizeof(h));
+-				error = sd_xfer(lg.first, 1, lg.hdr, true);
+-			}
+-			lck_mtx_unlock(&nx_sdmmc_lock);
+-			if (error) {
+-				printf("NX SD LOG: write failed (%d), stopping\n", error);
+-				kfree_data(tmp, 16384);
+-				return;
+-			}
+-			flushed = pos;
++	while (!lg.panicking) {
++		lck_mtx_lock(&nx_sdmmc_lock);
++		int error = lg.panicking ? 0 : log_flush(tmp, 16384);
++		lck_mtx_unlock(&nx_sdmmc_lock);
++		if (error) {
++			printf("NX SD LOG: write failed (%d), stopping\n", error);
++			break;
+ 		}
+ 		(void)tsleep(&lg.chan, PZERO, "nxsdlog", hz * (int)lg.secs);
+ 	}
++	kfree_data(tmp, 16384);
++}
++
++/*
++ * First thing in a panic (osfmk/kern/debug.c): put the panic message into
++ * the console ring and write the log out synchronously with polled I/O, so
++ * the panic is on the card even if it came less than sdlogsecs after the
++ * last flush. Interrupts and the scheduler can't be relied on here.
++ */
++static char lg_panic_tmp[4096];
++
++static void
++nx_sdmmc_panic_log(const char *fmt, va_list *args)
++{
++	if (lg.shadow == NULL || lg.panicking) {
++		return;
++	}
++	lg.panicking = 1;
++	char msg[256];
++	va_list copy;
++	va_copy(copy, *args);
++#pragma clang diagnostic push
++#pragma clang diagnostic ignored "-Wformat-nonliteral"
++	int len = vsnprintf(msg, sizeof(msg), fmt, copy);
++#pragma clang diagnostic pop
++	va_end(copy);
++	if (len < 0) {
++		len = 0;
++	} else if ((size_t)len >= sizeof(msg)) {
++		len = (int)sizeof(msg) - 1;
++	}
++	sweet_log_append("\n*** PANIC (NX SD LOG): ", 24);
++	sweet_log_append(msg, len);
++	sweet_log_append("\n", 1);
++
++	sd_panic_cpu = cpu_number();
++	__atomic_store_n(&sd_panicked, 1, __ATOMIC_SEQ_CST);
++	/* Let a transfer on another CPU finish (200 ms), else take the bus over. */
++	uint64_t t = now_us();
++	while (__atomic_load_n(&sd_active, __ATOMIC_SEQ_CST) && now_us() - t < 200000) {
++	}
++	if (__atomic_load_n(&sd_active, __ATOMIC_SEQ_CST)) {
++		reset_lines(RST_CMD | RST_DAT);
++		__atomic_store_n(&sd_active, 0, __ATOMIC_SEQ_CST);
++	}
++	(void)log_flush(lg_panic_tmp, sizeof(lg_panic_tmp));
+ }
+ 
+ /* Boot-arg sdlog=1: start the log writer (IOFindBSDRoot calls this once). */
+@@ -952,6 +1041,7 @@ nx_sdmmc_log_start(void)
+ 		printf("NX SD LOG: no memory\n");
+ 		return;
+ 	}
++	nx_panic_log_hook = nx_sdmmc_panic_log;
+ 	if (kernel_thread_start(nx_sdmmc_log_thread, NULL, &thread) == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
+ 	}
+diff --git a/osfmk/kern/debug.c b/osfmk/kern/debug.c
+index 437adb1..da38c8d 100644
+--- a/osfmk/kern/debug.c
++++ b/osfmk/kern/debug.c
+@@ -86,6 +86,10 @@
+ #include <console/serial_protos.h>
+ #if defined(__arm64__)
+ #include <arm64/sweet_early.h>
++#if defined(NX_SWITCH)
++/* Set by bsd/dev/nx_sdmmc.c when the SD console log runs (boot-arg sdlog=1). */
++void (*nx_panic_log_hook)(const char *fmt, va_list *args) = NULL;
++#endif
+ #endif
+ #include <IOKit/IOBSD.h>
+ 
+@@ -1076,6 +1080,14 @@ panic_trap_to_debugger(const char *panic_format_str, va_list *panic_args, unsign
+ 	/* No CPU/thread/debugger state is required for this first panic copy. */
+ 	sweet_early_panic(panic_format_str, panic_args);
+ #endif
++#if defined(NX_SWITCH)
++	/* bsd/dev/nx_sdmmc.c: write the console log (with this message) to the SD card. */
++	if (nx_panic_log_hook != NULL) {
++		void (*hook)(const char *, va_list *) = nx_panic_log_hook;
++		nx_panic_log_hook = NULL;               /* once, also for nested panics */
++		hook(panic_format_str, panic_args);
++	}
++#endif
+ 
+ #if defined(__x86_64__) && (DEVELOPMENT || DEBUG)
+ 	read_lbr();
+-- 
+2.55.0
+

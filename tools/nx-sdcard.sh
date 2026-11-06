@@ -26,7 +26,7 @@ TREE=$(cd "$(dirname "$0")/.." && pwd)
 out=${1:?usage: nx-sdcard.sh OUTDIR KERNEL [options]}
 kernel=${2:?usage: nx-sdcard.sh OUTDIR KERNEL [options]}
 shift 2
-ramdisk= bl31= cpus=1 extra= init=
+ramdisk= bl31= cpus=4 extra= init=
 cmdline="debug=0xc serial=3 keepsyms=1 -noprogress"
 while [ $# -gt 0 ]; do
 	case "$1" in

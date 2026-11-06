@@ -2,8 +2,8 @@
 
 Goal: bring up XNU (xnu-8796, iOS 16 generation) on a Nintendo Switch
 (rev 0 / Erista, Tegra X1 T210), following the dipa-studio/ios-sweet
-approach. **Status 2026-11-05 evening: XNU boots on the Switch to a PID 1
-init in userland** (see "Hardware log"). Earlier the same day: design and
+approach. **Status 2026-11-05 evening: XNU boots on the Switch on all 4 cores to a
+PID 1 init in userland** (see "Hardware log"). Earlier the same day: design and
 fact-gathering done, no Switch-specific code written yet. Session 2 (same day) re-read hekate's
 L4T launcher for the BL33 handoff and fixed the `shim-nx/` design (see
 "Session 2" below). `shim-nx/` is now **written and builds, but has not
@@ -444,7 +444,7 @@ cortex-a53 (ARMv8.0, fine on the A57).
 [--cmdline ...] [--cpus N]` does the whole chain below (ADT with 4 CPUs,
 payload, shim build) and writes an SD layout to OUTDIR
 (`switchroot/ios/bl33.bin`, optional `bl31.bin`,
-`bootloader/ini/ios-nx.ini`). It adds `cpus=N` (default 1) and `rd=md0`
+`bootloader/ini/ios-nx.ini`). It adds `cpus=N` (default 4 since the SMP test passed) and `rd=md0`
 with a RAM disk, else `rd=sdroot0`. Tested with the synthetic kernel +
 a 64 KiB dummy RAM disk. It writes no device.
 
@@ -583,6 +583,12 @@ cpus=4 to test PSCI + the EL2 drop + SGIs.
   GICv2 + vtimer (heartbeat = select() timeouts = timer IRQs), IOKit,
   SweetCPU (cpus=1), mockfs root, exec of a static arm64 Mach-O, syscalls
   and the console.
+- **SMP WORKS: `cpus=4`**: the user reports `4/4 CPUs initialized, SGI1
+  verified` (SweetCPU::startAll), then the init heartbeat. Confirmed on
+  hardware: XNU starting the secondaries with PSCI CPU_ON (smc #0 to
+  ATF), `sweet_secondary_entry` dropping EL2 -> EL1 without
+  ICC_SRE_EL2 (0963), GICv2 SGIs between cores with per-core
+  ITARGETSR0 masks (0962/0966). `nx-sdcard.sh` now defaults to cpus=4.
 - cpus=4 test image (`work/sdcard-init-smp/`, bl33.bin SHA-256
   4941834a...) copied to the card; the working cpus=1 image is kept as
   `switchroot/ios/bl33-cpus1.bin`. (That time the card didn't auto-mount;

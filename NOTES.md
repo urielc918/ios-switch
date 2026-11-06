@@ -697,6 +697,15 @@ iOS space contiguous; never move/cross the emuMMC).
   clang 23, since ~/swift is gone; env XNU_CC_CLANG / XNU_CC_CI_DXB) syntax-checks
   nx_input.c, nx_sdmmc.c, SweetPlatformExpert.cpp: 0 errors (an injected
   error is caught). `git apply --check` on the 0973 tree: OK.
+  CI run 42276661937: success, 221 applied (the 4 "error" lines are
+  blacktop's skipped patches, as on 0973); kernel in `work/ci-42276661937/`
+  (has the `NX POWER:` strings). Test image `work/img-0974/bl33.bin`
+  (6fe1c5ae...) = the proven shim (first 0xe000 bytes of the card's
+  f03ce775 bl33.bin) + a new payload (0974 kernel, same cmdline incl.
+  nxtimeoff=847272720). **On the card as a separate hekate entry**:
+  `bootloader/ini/ios-nx-test.ini` "[iOS NX (test)]" ->
+  `/switchroot/ios-test/` (bl31.bin = copy of ios/bl31.bin, bl33.bin =
+  0974). "iOS NX" still boots the 0973 image. Pending: hardware test.
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

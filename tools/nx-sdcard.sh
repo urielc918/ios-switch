@@ -51,7 +51,9 @@ fi
 if [ -n "$ramdisk" ]; then
 	cmdline="$cmdline cpus=$cpus rd=md0"
 else
-	cmdline="$cmdline cpus=$cpus rd=sdroot0"
+	# The ios partition is iOS's own: writable root (rootrw=1, topaz 0031) on a
+	# writable device (sdrw=1), and launchd's job cache without AMFI, as topaz.
+	cmdline="$cmdline cpus=$cpus rd=sdroot0 sdrw=1 rootrw=1 launchd_unsecure_cache=1"
 fi
 python3 "$TREE/tools/mkadt-nx.py" "$work/nx.adt" --cpus 4
 python3 "$TREE/tools/mkpayload.py" "$kernel" "$work/nx.adt" "$work/payload.bin" \

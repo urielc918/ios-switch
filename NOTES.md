@@ -363,6 +363,11 @@ iOS space contiguous; never move/cross the emuMMC).
   hybrid entries. Repartitioning done. Lesson for later sgdisk runs on
   this card: expect that warning and a non-zero exit, and verify by
   rereading + comparing sector 0 instead.
+- Full iOS boot files: `work/sdcard-ios/` = `nx-sdcard.sh ... --log`:
+  cmdline `debug=0xc serial=3 keepsyms=1 -noprogress sdlog=1 cpus=4
+  rd=sdroot0 sdrw=1 rootrw=1 launchd_unsecure_cache=1` (no RAM disk). The
+  last three are topaz's iOS-root args (`ufsrw=1 rootrw=1
+  launchd_unsecure_cache=1`, ours with sdrw), now the default for SD roots.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/
   fsck.hfsplus) and gptfdisk (sgdisk); the kernel has `hfsplus.ko`.
   sudo needs the user's password: they run sudo steps in their terminal.

@@ -1,0 +1,255 @@
+From 91bc30d4917a6c108854ba9195bc08a41c7d934c Mon Sep 17 00:00:00 2001
+From: x <x@x>
+Date: Fri, 6 Nov 2026 13:52:39 -0800
+Subject: [PATCH] nx-0976: SD SDMA through a 1 MiB contiguous bounce buffer
+ (host v4, 64-bit addressing), checked against PIO at boot, boot-arg sddma=0
+ for PIO
+
+---
+ bsd/dev/nx_sdmmc.c | 141 +++++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 137 insertions(+), 4 deletions(-)
+
+diff --git a/bsd/dev/nx_sdmmc.c b/bsd/dev/nx_sdmmc.c
+index f617cda..6366b5d 100644
+--- a/bsd/dev/nx_sdmmc.c
++++ b/bsd/dev/nx_sdmmc.c
+@@ -7,8 +7,10 @@
+  * clocks; see shim-nx/sdmmc.c and NOTES.md). This driver takes the
+  * controller from there: software reset, Tegra trims and pad calibration,
+  * card identification, 4-bit bus at 24.7 MHz, then SD high speed (CMD6,
+- * 48 MHz; boot-arg sdhs=0 keeps default speed), then polled PIO (no DMA, so
+- * no cache maintenance). It finds one partition (boot-arg sdroot=: a GPT
++ * 48 MHz; boot-arg sdhs=0 keeps default speed). Data moves by SDMA through
++ * a 1 MiB contiguous bounce buffer (64-bit addressing: XNU's RAM is above
++ * 4 GB; cache clean/flush by PA as sweet_ufs.c), checked once against a
++ * PIO read; polled PIO if that fails or with boot-arg sddma=0. It finds one partition (boot-arg sdroot=: a GPT
+  * partition name, default "ios", or "mbr:N" for MBR slot N, 1-4) and
+  * exposes it as the BSD disk sdroot0 (rsdroot0), 512-byte sectors. Root on
+  * it with rd=sdroot0.
+@@ -46,6 +48,9 @@ void nx_sdmmc_log_final(void);
+ #include <kern/sched_prim.h>
+ #include <kern/cpu_number.h>
+ #include <machine/machine_routines.h>
++#include <arm/caches_internal.h>
++#include <vm/pmap.h>
++#include <vm/vm_kern.h>
+ #include <pexpert/pexpert.h>
+ #include <pexpert/device_tree.h>
+ #include <libkern/libkern.h>
+@@ -54,6 +59,7 @@ void nx_sdmmc_log_final(void);
+ extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
+ extern kern_return_t kernel_thread_start(thread_continue_t, void *, thread_t *);
+ extern void thread_deallocate(thread_t);
++extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);    /* as sweet_ufs.c */
+ extern int hz;
+ /* bsd/dev/sweet_ufs.c: the console ring every SWEET kernel keeps */
+ extern uint32_t sweet_log_copy(uint64_t *pos, char *out, uint32_t max);
+@@ -67,6 +73,7 @@ extern void (*nx_panic_log_hook)(const char *fmt, va_list *args);
+ #define SD_BLKCNT       0x06    /* 16 */
+ #define SD_ARG          0x08
+ #define SD_TRNMOD_CMD   0x0C    /* transfer mode (16) | command (16) << 16 */
++#define  TRN_DMA        (1u << 0)
+ #define  TRN_BLKCNT_EN  (1u << 1)
+ #define  TRN_AUTO_CMD12 (1u << 2)
+ #define  TRN_READ       (1u << 4)
+@@ -102,12 +109,22 @@ extern void (*nx_panic_log_hook)(const char *fmt, va_list *args);
+ #define SD_INTSTS       0x30    /* normal (16) | error (16) << 16, write 1 to clear */
+ #define  INT_CMD_DONE   (1u << 0)
+ #define  INT_XFER_DONE  (1u << 1)
++#define  INT_DMA        (1u << 3)     /* SDMA boundary reached */
+ #define  INT_BUF_WR     (1u << 4)
+ #define  INT_BUF_RD     (1u << 5)
+ #define  INT_ERR        (1u << 15)
+ #define SD_NORINTEN     0x34    /* 16 */
+ #define SD_ERRINTEN     0x36    /* 16 */
+ #define SD_HOSTCTL2     0x3E    /* 16 */
++#define  HC2_V4         (1u << 12)    /* host version 4: SDMA address at 0x58/0x5C */
++#define  HC2_64BIT      (1u << 13)
++#define SD_CAPS         0x40
++#define  CAP_64BIT      (1u << 28)
++#define SD_ADMA_LO      0x58
++#define SD_ADMA_HI      0x5C
++#define  HC_DMA_MASK    (3u << 3)     /* HOSTCTL DMA select: 0 = SDMA */
++#define SDMA_BOUNDARY   (512u * 1024) /* BLKSIZE bits 14:12 = 7 */
++#define  BLKSIZE_SDMA_512K (7u << 12)
+ #define  HC2_PRESET_EN  (1u << 15)
+ #define  HC2_VDD_180    (1u << 3)
+ 
+@@ -149,6 +166,8 @@ static struct {
+ 	bool ready;
+ 	uint32_t last_err;              /* INTSTS of the last failure */
+ 	uint32_t mhz10;                 /* card clock in 0.1 MHz, for the log */
++	vm_offset_t dma;                /* 1 MiB bounce buffer (kernel VA), 0 = PIO */
++	uint64_t dma_pa;
+ } sd;
+ 
+ static LCK_GRP_DECLARE(nx_sdmmc_grp, "nx_sdmmc");
+@@ -230,6 +249,8 @@ wait_int(uint32_t want, uint32_t timeout_us)
+ 
+ /* Block size of the next data command if not 0 (else SECTOR); see sd_read_short. */
+ static uint32_t sd_blksize;
++/* Next data command uses SDMA (address already in SD_ADMA_LO/HI); see sd_xfer_dma. */
++static bool sd_dma_next;
+ 
+ /*
+  * One command. data: 0 none, 1 read, 2 write; nblk > 1 uses the block
+@@ -261,9 +282,9 @@ sd_cmd(uint32_t idx, uint32_t arg, uint32_t rsp, int data, uint32_t nblk, uint32
+ 	wr32(SD_ARG, arg);
+ 	uint32_t trn = 0;
+ 	if (data) {
+-		wr16(SD_BLKSIZE, (uint16_t)(sd_blksize ? sd_blksize : SECTOR));
++		wr16(SD_BLKSIZE, (uint16_t)((sd_blksize ? sd_blksize : SECTOR) | (sd_dma_next ? BLKSIZE_SDMA_512K : 0)));
+ 		wr16(SD_BLKCNT, (uint16_t)nblk);
+-		trn = (data == 1 ? TRN_READ : 0);
++		trn = (data == 1 ? TRN_READ : 0) | (sd_dma_next ? TRN_DMA : 0);
+ 		if (nblk > 1) {
+ 			trn |= TRN_MULTI | TRN_BLKCNT_EN | TRN_AUTO_CMD12;
+ 		}
+@@ -469,6 +490,7 @@ set_module_clock(unsigned div)
+  * Returns 0 with the card in high speed, else the card stays at default speed.
+  */
+ static int sd_xfer_raw(uint64_t lba, uint32_t n, uint8_t *buf, bool write);
++static void dma_setup(void);
+ static uint8_t hs_ref[SECTOR], hs_chk[SECTOR];
+ 
+ static int
+@@ -605,6 +627,55 @@ sd_xfer(uint64_t lba, uint32_t n, uint8_t *buf, bool write)
+ }
+ 
+ /* PIO transfer of n blocks at card block lba to/from buf. */
++/*
++ * SDMA through the bounce buffer, as hekate's _sdmmc_config_sdma /
++ * _sdmmc_update_sdma: the host stops at every 512 KiB boundary (INT_DMA)
++ * and continues once the next address is written. Polled, so it also works
++ * in the panic path.
++ */
++static int
++sd_xfer_dma(uint32_t idx, uint32_t arg, uint32_t n, uint8_t *buf, bool write)
++{
++	uint32_t len = n * SECTOR;
++	if (write) {
++		memcpy((void *)sd.dma, buf, len);
++		clean_dcache64((addr64_t)sd.dma_pa, len, TRUE);
++	} else {
++		flush_dcache64((addr64_t)sd.dma_pa, len, TRUE);    /* no dirty line may land on DMA data */
++	}
++	wr32(SD_ADMA_LO, (uint32_t)sd.dma_pa);
++	wr32(SD_ADMA_HI, (uint32_t)(sd.dma_pa >> 32));
++	sd_dma_next = true;
++	int error = sd_cmd(idx, arg, RSP_48, write ? 2 : 1, n, NULL);
++	sd_dma_next = false;
++	uint64_t next = (sd.dma_pa + SDMA_BOUNDARY) & ~(uint64_t)(SDMA_BOUNDARY - 1);
++	uint64_t t = now_us();
++	while (!error) {
++		uint32_t st = rd32(SD_INTSTS);
++		if (st & INT_ERR) {
++			sd.last_err = st;
++			error = EIO;
++		} else if (st & INT_XFER_DONE) {
++			wr32(SD_INTSTS, INT_XFER_DONE | INT_DMA);
++			break;
++		} else if (st & INT_DMA) {
++			wr32(SD_INTSTS, INT_DMA);
++			wr32(SD_ADMA_LO, (uint32_t)next);
++			wr32(SD_ADMA_HI, (uint32_t)(next >> 32));
++			next += SDMA_BOUNDARY;
++			t = now_us();
++		} else if (now_us() - t > DATA_TIMEOUT_US) {
++			sd.last_err = st;
++			error = ETIMEDOUT;
++		}
++	}
++	if (!error && !write) {
++		flush_dcache64((addr64_t)sd.dma_pa, len, TRUE);    /* drop lines fetched during the DMA */
++		memcpy(buf, (const void *)sd.dma, len);
++	}
++	return error;
++}
++
+ static int
+ sd_xfer_raw(uint64_t lba, uint32_t n, uint8_t *buf, bool write)
+ {
+@@ -613,6 +684,19 @@ sd_xfer_raw(uint64_t lba, uint32_t n, uint8_t *buf, bool write)
+ 	}
+ 	uint32_t arg = (uint32_t)(sd.sdhc ? lba : lba * SECTOR);
+ 	uint32_t idx = write ? (n > 1 ? 25u : 24u) : (n > 1 ? 18u : 17u);
++	if (sd.dma != 0) {
++		int derr = sd_xfer_dma(idx, arg, n, buf, write);
++		if (derr) {
++			printf("NX SD: DMA CMD%u lba 0x%llx n %u failed %d (intsts 0x%08x)\n",
++			    idx, lba, n, derr, sd.last_err);
++			reset_lines(RST_CMD | RST_DAT);
++			if (n > 1) {
++				(void)sd_cmd(12, 0, RSP_48_BUSY, 0, 0, NULL);
++			}
++			return derr;
++		}
++		return write ? wait_ready() : 0;
++	}
+ 	int error = sd_cmd(idx, arg, RSP_48, write ? 2 : 1, n, NULL);
+ 	for (uint32_t b = 0; !error && b < n; b++) {
+ 		error = wait_int(write ? INT_BUF_WR : INT_BUF_RD, DATA_TIMEOUT_US);
+@@ -913,11 +997,60 @@ card_up(void)
+ 		    sd.card_blocks >> 11, sd.rca, sd.mhz10 > 247 ? "high speed" : "default speed",
+ 		    sd.mhz10 / 10, sd.mhz10 % 10);
+ 	}
++	if (!error) {
++		dma_setup();
++	}
+ 	sd.card_error = error;
+ 	return error;
+ }
+ 
+ /* Find a partition by name (or mbr:N) and check it lies on the card. Lock held. */
++/*
++ * Boot-arg sddma=0 keeps PIO. Else: 1 MiB contiguous bounce buffer, host
++ * version 4 + 64-bit addressing (the buffer is above 4 GB), SDMA; checked
++ * with LBA 1..8 read by DMA against the same blocks read by PIO.
++ */
++static uint8_t dma_ref[8 * SECTOR], dma_chk[8 * SECTOR];
++
++static void
++dma_setup(void)
++{
++	uint32_t on = 1;
++	(void)PE_parse_boot_argn("sddma", &on, sizeof(on));
++	if (!on) {
++		printf("NX SD: PIO (sddma=0)\n");
++		return;
++	}
++	vm_offset_t va = 0;
++	if (kmem_alloc_contig(kernel_map, &va, CHUNK_BLOCKS * SECTOR, PAGE_MASK, 0, 0,
++	    KMA_DATA | KMA_ZERO | KMA_PERMANENT, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
++		printf("NX SD: no contiguous DMA memory, PIO\n");
++		return;
++	}
++	ppnum_t pn = pmap_find_phys(kernel_pmap, (addr64_t)va);
++	uint64_t pa = ptoa_64(pn);
++	if (pn == 0 || ((pa + CHUNK_BLOCKS * SECTOR - 1) >> 32 && !(rd32(SD_CAPS) & CAP_64BIT))) {
++		printf("NX SD: DMA buffer at %#llx not usable (caps %#x), PIO\n", pa, rd32(SD_CAPS));
++		return;                 /* the buffer stays allocated (permanent) */
++	}
++	if (sd_xfer_raw(1, 8, dma_ref, false)) {
++		return;
++	}
++	wr16(SD_HOSTCTL2, (uint16_t)(rd16(SD_HOSTCTL2) | HC2_V4 | HC2_64BIT));
++	wr8(SD_HOSTCTL, (uint8_t)(rd8(SD_HOSTCTL) & ~HC_DMA_MASK));
++	wr16(SD_NORINTEN, (uint16_t)(rd16(SD_NORINTEN) | INT_DMA));
++	sd.dma_pa = pa;
++	sd.dma = va;
++	int error = sd_xfer_raw(1, 8, dma_chk, false);
++	if (error || memcmp(dma_ref, dma_chk, sizeof(dma_ref)) != 0) {
++		printf("NX SD: DMA check failed (%d), PIO\n", error);
++		sd.dma = 0;
++		wr16(SD_HOSTCTL2, (uint16_t)(rd16(SD_HOSTCTL2) & ~(HC2_V4 | HC2_64BIT)));
++		return;
++	}
++	printf("NX SD: SDMA, bounce buffer at %#llx\n", pa);
++}
++
+ static int
+ lookup(const char *want, uint64_t *first, uint64_t *count)
+ {
+-- 
+2.56.0
+

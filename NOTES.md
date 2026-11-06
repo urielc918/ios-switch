@@ -773,6 +773,26 @@ iOS space contiguous; never move/cross the emuMMC).
   SD_BUFFER read: the polled PIO copy (one uncached device read per word)
   is the limit, not the bus (24 MB/s at 48 MHz). Next for speed: ADMA2
   (DMA) in nx_sdmmc.c; the card clock is no longer the bottleneck.
+  - **0975 is the main image** (2026-11-06): `switchroot/ios/bl33.bin` =
+    2e6d5232... (proven shim + 0975 payload, main cmdline, no sdbench);
+    previous main kept as `bl33-0974.bin` (6fe1c5ae...). Test entries
+    ios-nx-test/ios-nx-base and their folders removed.
+- **0976-nx-sd-dma (written, syntax-checked, pushed for CI)**: SDMA in
+  nx_sdmmc.c, as hekate's `_sdmmc_config_sdma`/`_sdmmc_update_sdma`
+  (bdk/storage/sdmmc_driver.c) and the bounce-buffer pattern of
+  bsd/dev/sweet_ufs.c. `dma_setup()` after card init: 1 MiB
+  `kmem_alloc_contig` (KMA_DATA|KMA_ZERO|KMA_PERMANENT), PA via
+  `pmap_find_phys`; XNU's RAM is at 0x1_0000_0000+, so it needs CAPS
+  (0x40) bit 28 and HOSTCTL2 bits 12 (host v4: SDMA address in 0x58/0x5C)
+  + 13 (64-bit); HOSTCTL DMA select 0 (SDMA); NORINTEN bit 3 (DMA). Every
+  transfer: write = memcpy + `clean_dcache64(pa)`, read = `flush_dcache64`
+  before and after (SWEET has no APPLE_ARM64_ARCH_FAMILY, so these are real
+  `dc civac` loops) + memcpy; BLKSIZE | 7 << 12 (512 KiB boundary), TRNMOD
+  bit 0; polled loop: INT_DMA -> next 512 KiB-aligned address, XFER_DONE ->
+  done (works in the panic path too). Checked at boot: LBA 1..8 by PIO vs by
+  DMA; any error or difference -> PIO (v4/64-bit bits cleared). Log:
+  `NX SD: SDMA, bounce buffer at 0x...` or the reason for PIO. Boot-arg
+  `sddma=0` = PIO. CMD6 and the HS check still use PIO (before dma_setup).
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

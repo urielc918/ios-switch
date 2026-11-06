@@ -1,0 +1,207 @@
+From 4c3255d0691fa9e0bb7e1e620e2a6a16cc3b4d39 Mon Sep 17 00:00:00 2001
+From: x <x@x>
+Date: Fri, 6 Nov 2026 11:05:31 -0800
+Subject: [PATCH] nx-0974: shutdown powers off (MAX77620 PWR_OFF), restart goes
+ to hekate (bl31 reboot-to-payload), volume up/down at shutdown = hekate/RCM
+
+---
+ bsd/dev/nx_input.c                       | 82 ++++++++++++++++++++++++
+ bsd/dev/nx_sdmmc.c                       | 23 +++++++
+ iokit/Kernel/arm/SweetPlatformExpert.cpp | 16 +++++
+ 3 files changed, 121 insertions(+)
+
+diff --git a/bsd/dev/nx_input.c b/bsd/dev/nx_input.c
+index 8559c46..b8ef99d 100644
+--- a/bsd/dev/nx_input.c
++++ b/bsd/dev/nx_input.c
+@@ -18,6 +18,8 @@
+  * panel as fb x = y, fb y = 1279 - x (measured on hardware; see fts_map).
+  * Boot-args: nxtouch=0 disables it, nxtouchrot=N corrects the mapping
+  * (1 flip x, 2 flip y, 4 swap x/y, applied after the default).
++ *
++ * Shutdown and restart: nx_halt_restart(), from SweetPlatformExpert::haltRestart.
+  */
+ #include <sys/param.h>
+ #include <sys/types.h>
+@@ -26,6 +28,8 @@
+ void nx_input_start(void);
+ int nx_i2c_xfer(unsigned bus, uint8_t addr, const uint8_t *wr, unsigned wlen, uint8_t *rd, unsigned rlen);
+ int nx_rtc_read(uint64_t *epoch);
++int nx_halt_restart(int restart);
++void nx_sdmmc_log_final(void);          /* bsd/dev/nx_sdmmc.c */
+ 
+ #if defined(NX_SWITCH)
+ #include <sys/systm.h>
+@@ -486,6 +490,78 @@ nx_rtc_read(uint64_t *epoch)
+ 	return 0;
+ }
+ 
++/*
++ * Shutdown and restart (SweetPlatformExpert::haltRestart: kPEHaltCPU,
++ * kPERestartCPU). What switchroot's bl31 (CTCaer/switch-l4t-atf, T210) does:
++ *  - PSCI SYSTEM_RESET with PMC_SCRATCH0 bit 1 (RCM) clear: "reboot to
++ *    payload" into the copy of hekate that hekate's L4T launcher handed it
++ *    (r2p_payload_base), boot config cleared, so hekate's menu comes up.
++ *    With bit 1 set: plain PMC reset, the boot ROM enters RCM.
++ *  - PSCI SYSTEM_OFF: not handled (bl31 panics). Power-off is done here as
++ *    hekate's POWER_OFF does it: MAX77620 ONOFFCNFG1 (0x41) = PWR_OFF.
++ * Restart goes to hekate. Shutdown powers off, unless a volume key is held:
++ * volume up = restart to hekate, volume down = RCM.
++ * PMC access from EL1 works: hekate's L4T launcher sets FLAGS_PMC_NON_SECURE.
++ */
++#define PMC_PA                  0x7000E000u     /* page; the PMC is at +0x400 */
++#define PMC_CNTRL               0x400u
++#define  PMC_CNTRL_MAIN_RST     (1u << 4)
++#define PMC_SCRATCH0            0x450u
++#define  PMC_SCRATCH0_MODE_RCM  (1u << 1)
++#define PMIC_ONOFFCNFG1         0x41
++#define  ONOFFCNFG1_PWR_OFF     (1u << 1)
++#define PSCI_SYSTEM_RESET       0x84000009ULL
++
++static void
++psci_system_reset(void)
++{
++	register uint64_t x0 __asm__("x0") = PSCI_SYSTEM_RESET;
++	__asm__ volatile ("smc #0" : "+r"(x0) : :
++	    "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11",
++	    "x12", "x13", "x14", "x15", "x16", "x17", "cc", "memory");
++}
++
++int
++nx_halt_restart(int restart)
++{
++	enum { NX_OFF, NX_HEKATE, NX_RCM } act = restart ? NX_HEKATE : NX_OFF;
++	static const char *const names[] = { "power off", "restart to hekate", "restart to RCM" };
++
++	if (gpio_base == 0) {
++		gpio_base = ml_io_map(GPIO_PA, 0x1000);
++	}
++	if (gpio_base != 0) {
++		uint32_t in = rd32(gpio_base + GPIO_IN(GPIO_PORT_X));
++		if (!(in & (1u << PIN_VOL_DOWN))) {
++			act = NX_RCM;
++		} else if (!(in & (1u << PIN_VOL_UP))) {
++			act = NX_HEKATE;
++		}
++	}
++	printf("NX POWER: %s requested -> %s\n", restart ? "restart" : "shutdown", names[act]);
++	nx_sdmmc_log_final();
++
++	if (act == NX_OFF) {
++		uint8_t w[2] = { PMIC_ONOFFCNFG1, ONOFFCNFG1_PWR_OFF };
++		int error = nx_i2c_xfer(5, PMIC_ADDR, w, 2, NULL, 0);
++		delay(2000000);                 /* the PMIC cuts power within a few ms */
++		printf("NX POWER: PMIC power-off didn't happen (err %d), restarting to hekate\n", error);
++		nx_sdmmc_log_final();
++		act = NX_HEKATE;
++	}
++
++	vm_offset_t pmc = ml_io_map(PMC_PA, 0x1000);
++	if (pmc != 0) {
++		uint32_t s0 = rd32(pmc + PMC_SCRATCH0);
++		wr32(pmc + PMC_SCRATCH0, act == NX_RCM ? (s0 | PMC_SCRATCH0_MODE_RCM) : (s0 & ~PMC_SCRATCH0_MODE_RCM));
++	}
++	psci_system_reset();                    /* does not return */
++	if (pmc != 0) {                         /* bl31 refused: reset the SoC ourselves (no hekate) */
++		wr32(pmc + PMC_CNTRL, rd32(pmc + PMC_CNTRL) | PMC_CNTRL_MAIN_RST);
++	}
++	return -1;
++}
++
+ /* Called once from IOFindBSDRoot (iokit/bsddev/IOKitBSDInit.cpp). */
+ void
+ nx_input_start(void)
+@@ -557,4 +633,10 @@ nx_rtc_read(__unused uint64_t *epoch)
+ 	return ENXIO;
+ }
+ 
++int
++nx_halt_restart(__unused int restart)
++{
++	return -1;
++}
++
+ #endif /* NX_SWITCH */
+diff --git a/bsd/dev/nx_sdmmc.c b/bsd/dev/nx_sdmmc.c
+index 575b0ad..63ab28a 100644
+--- a/bsd/dev/nx_sdmmc.c
++++ b/bsd/dev/nx_sdmmc.c
+@@ -29,6 +29,7 @@
+ 
+ int nx_sdmmc_rootdev(dev_t *dev);
+ void nx_sdmmc_log_start(void);
++void nx_sdmmc_log_final(void);
+ 
+ #if defined(NX_SWITCH)
+ #include <sys/systm.h>
+@@ -1006,6 +1007,23 @@ nx_sdmmc_panic_log(const char *fmt, va_list *args)
+ 	(void)log_flush(lg_panic_tmp, sizeof(lg_panic_tmp));
+ }
+ 
++/*
++ * Shutdown and restart (nx_halt_restart in nx_input.c): write out what the
++ * log thread hasn't yet, so the last lines before power-off are on the card.
++ */
++static char lg_final_tmp[4096];
++
++void
++nx_sdmmc_log_final(void)
++{
++	if (lg.shadow == NULL || lg.panicking) {
++		return;
++	}
++	lck_mtx_lock(&nx_sdmmc_lock);
++	(void)log_flush(lg_final_tmp, sizeof(lg_final_tmp));
++	lck_mtx_unlock(&nx_sdmmc_lock);
++}
++
+ /* Boot-arg sdlog=1: start the log writer (IOFindBSDRoot calls this once). */
+ void
+ nx_sdmmc_log_start(void)
+@@ -1074,4 +1092,9 @@ nx_sdmmc_log_start(void)
+ {
+ }
+ 
++void
++nx_sdmmc_log_final(void)
++{
++}
++
+ #endif /* NX_SWITCH */
+diff --git a/iokit/Kernel/arm/SweetPlatformExpert.cpp b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+index 0d5135c..a44f6bc 100644
+--- a/iokit/Kernel/arm/SweetPlatformExpert.cpp
++++ b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+@@ -21,6 +21,7 @@ public:
+ #if defined(NX_SWITCH)
+ 	long getGMTTimeOfDay(void) APPLE_KEXT_OVERRIDE;
+ 	void setGMTTimeOfDay(long secs) APPLE_KEXT_OVERRIDE;
++	int haltRestart(unsigned int type) APPLE_KEXT_OVERRIDE;
+ #endif
+ };
+ 
+@@ -73,6 +74,21 @@ SweetPlatformExpert::setGMTTimeOfDay(long secs)
+ {
+ 	IOLog("NX RTC: not setting the RTC (%ld)\n", secs);
+ }
++
++extern "C" int nx_halt_restart(int restart);    /* bsd/dev/nx_input.c */
++
++/*
++ * Shutdown -> power off (volume up held: hekate, volume down: RCM); restart
++ * -> hekate. Panic restarts keep the default (the panic screen stays up).
++ */
++int
++SweetPlatformExpert::haltRestart(unsigned int type)
++{
++	if (type == kPEHaltCPU || type == kPEUPSDelayHaltCPU || type == kPERestartCPU) {
++		return nx_halt_restart(type == kPERestartCPU);
++	}
++	return IODTPlatformExpert::haltRestart(type);
++}
+ #endif
+ 
+ const char *
+-- 
+2.56.0
+

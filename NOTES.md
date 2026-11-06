@@ -666,6 +666,37 @@ iOS space contiguous; never move/cross the emuMMC).
     timeoffset + 28800** (exact, no screen reading). After an RTC reset, set
     the clock once in Nyx and recompute. Idea: let nx-sdcard.sh read it.
   - `work/hekate`: shallow clone of CTCaer/hekate (RTC code reference).
+- **0974-nx-power (written, syntax-checked, pushed for CI)**: shutdown and
+  restart. Facts from `work/switch-l4t-atf` (CTCaer/switch-l4t-atf, shallow):
+  `plat/nvidia/tegra/soc/t210/plat_psci_handlers.c`
+  `tegra_soc_prepare_system_reset`: on T210, if PMC_SCRATCH0 bit 1 (RCM) is
+  clear, `r2p_reboot_to_payload()` (plat_sip_calls.c): copies the R2P
+  payload to IRAM 0x40010000 with the boot config from SMC 0xC2FFFE04
+  (R2P_SET_CFG, zero by default -> hekate menu), sets warmboot +
+  SCRATCH45/46/33/40 tricks, PMC reset. hekate's L4T launcher
+  (bootloader/l4t/l4t.c) hands bl31 a copy of hekate itself as that payload
+  on Erista. With bit 1 set: plain PMC reset -> RCM.
+  `tegra_soc_prepare_system_off`: **panics** ("operation not handled"), so
+  PSCI SYSTEM_OFF is useless. hekate's POWER_OFF (bdk/utils/util.c): MAX77620
+  (I2C5 0x3C) ONOFFCNFG1 (0x41) = PWR_OFF (0x02).
+  Patch: SweetPlatformExpert::haltRestart (NX) -> `nx_halt_restart()` in
+  nx_input.c for kPEHaltCPU / kPEUPSDelayHaltCPU / kPERestartCPU (panic
+  restarts unchanged: the panic screen stays). Shutdown = PMIC PWR_OFF;
+  **volume up held at shutdown = restart to hekate, volume down = RCM**;
+  restart = hekate. Restart path: SCRATCH0 bit 1 set/cleared, PSCI
+  SYSTEM_RESET (0x84000009); fallback PMC_CNTRL MAIN_RST. If PWR_OFF hasn't
+  cut power after 2 s: restart to hekate. Before acting, `nx_sdmmc_log_final()`
+  writes the rest of the console log (log line `NX POWER: ... -> ...`).
+  iOS 16 has no restart UI: hold power ~2 s for the "slide to power off"
+  slider (iPhone 8 identity) or Settings > General > Shut Down, and hold a
+  volume key while it shuts down. Later idea: R2P_SET_CFG with hekate's
+  boot_cfg autoboot = the "iOS NX" entry, for a direct "restart into iOS".
+  Local check: `work/bt-0973` = 0973 run's xnu-buildtree (git, base commit
+  + 0974); `tools/xnu-cc.py logs/ci-RUN.log work/bt-0973 FILES` (now
+  defaults to the ios-switch runner path and falls back to /usr/bin/clang,
+  clang 23, since ~/swift is gone; env XNU_CC_CLANG / XNU_CC_CI_DXB) syntax-checks
+  nx_input.c, nx_sdmmc.c, SweetPlatformExpert.cpp: 0 errors (an injected
+  error is caught). `git apply --check` on the 0973 tree: OK.
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

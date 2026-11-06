@@ -10,7 +10,8 @@ commit. The original READMEs and notes are in `docs/upstream/`.
 **Status (2026-11-05):** XNU and the iOS 16.7.16 userland run on the
 Switch: Apple's launchd starts the iOS daemons from an HFS+ root on the SD
 card, on all four CPU cores, and SpringBoard reaches the **lock screen** on
-the Switch's panel (CPU-drawn, no GPU). No touch/button input yet. The boot shim passes every
+the Switch's panel (CPU-drawn, no GPU), operated with the **touchscreen
+and the buttons** (power, volume; volume up + down = Home). The boot shim passes every
 hardware test (EL2 entry, display take-over, PSCI 1.1, GICv2 timer
 interrupts, SD card cold init and reads). Kernels are built by CI on
 GitHub's macOS runners. Day-to-day notes, decisions and every hardware result:
@@ -34,7 +35,7 @@ XNU, with its payload (kernel, Apple device tree, RAM disk) appended to
 | `tools/rcm-test/` | Tiny RCM payload: proves code runs without a display |
 | `xnu/patches/0001-0152`, `0900-0950` | ios-sweet / ios-topaz kernel patches |
 | `xnu/patches/0153` | Xcode 16 `iig` compatibility (`IORPC.kernelContent`) |
-| `xnu/patches/0960-0967` | Switch: machine config, early framebuffer, GICv2, secondary CPUs, Qualcomm drivers off, SD root device, SD console log |
+| `xnu/patches/0960-0972` | Switch: machine config, early framebuffer, GICv2, secondary CPUs, Qualcomm drivers off, SD root device, SD console log, boot CPU, panic log, display, buttons, touchscreen |
 | `shim/` | the topaz phone shim (shared console code) |
 
 ## Building

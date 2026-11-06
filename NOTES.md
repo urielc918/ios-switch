@@ -570,7 +570,12 @@ iOS space contiguous; never move/cross the emuMMC).
   screen: iOS falls back to a non-Metal poster after AegirPoster fails, so
   no wallpaper fix is needed. Pending: make the 180-degree mapping the kernel default
   in fts_map (then drop nxtouchrot=3 from nx-sdcard.sh).
-- **0973-nx-rtc (written, pushed, NOT yet tested; CI result unchecked)**:
+- CI run 42185554301 (0973): success, 220 applied, kernel in
+  `work/ci-42185554301/`. bl33.bin (SHA-256 3b6683f1...) on the card; the
+  0972 build (with its nxtouchrot=3 cmdline) kept as
+  `switchroot/ios/bl33-0972.bin`. Waiting for the test boot (RTC log line,
+  boot time without the 30 s IORTC wait, touch without nxtouchrot).
+- **0973-nx-rtc (written, pushed, built; not yet tested on hardware)**:
   SweetPlatformExpert (NX) publishes resource "IORTC" (IOKitInitializeTime
   otherwise waits 30 s every boot) and overrides getGMTTimeOfDay = MAX77620
   RTC (I2C5 0x68, `nx_rtc_read()` in nx_input.c: UPDATE0=0x10, 20 ms, regs

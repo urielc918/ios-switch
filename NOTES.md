@@ -808,6 +808,11 @@ iOS space contiguous; never move/cross the emuMMC).
   PIO) -> 4.88 s (48 MHz PIO) -> **1.94 s** (48 MHz DMA). User: "boot is faster".
   Next for SD: UHS-I (1.8 V signalling + tuning, SDR104) would lift the bus
   limit; not needed right now.
+  - **0976 is the main image** (2026-11-06): `switchroot/ios/bl33.bin` =
+    f2d74797... (`work/img-0976-main/`: proven shim + 0976 payload, main
+    cmdline, no sdbench); previous main kept as `bl33-0975.bin`
+    (2e6d5232...). Test entry ios-nx-test and `switchroot/ios-test/` removed.
+    Backups on the card: bl33-0975, bl33-0974, bl33-0973 (+ older).
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

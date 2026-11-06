@@ -3,8 +3,8 @@
 Goal: bring up XNU (xnu-8796, iOS 16 generation) on a Nintendo Switch
 (rev 0 / Erista, Tegra X1 T210), following the dipa-studio/ios-sweet
 approach. **Status 2026-11-05 night: XNU + the iOS 16 userland run on the
-Switch from the SD card; backboardd + SpringBoard draw on the panel (Apple
-logo seen) through the NX AppleCLCD (patch 0970); no input yet** (see "Hardware log"). Earlier the same day: design and
+Switch from the SD card; SpringBoard reaches the iOS 16 lock screen on the
+panel through the NX AppleCLCD (patch 0970); no input, no GPU wallpaper** (see "Hardware log"). Earlier the same day: design and
 fact-gathering done, no Switch-specific code written yet. Session 2 (same day) re-read hekate's
 L4T launcher for the BL33 handoff and fixed the `shim-nx/` design (see
 "Session 2" below). `shim-nx/` is now **written and builds, but has not
@@ -471,6 +471,22 @@ iOS space contiguous; never move/cross the emuMMC).
   BT hardware), syncdefaultsd, assetsd, CollectionsPoster, widgets. Clock
   shows 1969 (no RTC driver). bl33.bin with stayon (SHA-256 55b6ff9d...)
   on the card.
+- **2026-11-05 ~23:00: iOS 16 LOCK SCREEN ON THE SWITCH** (0970 kernel +
+  sweetfb_stayon=1). User: "got to lock screen with black background and
+  red clock widget". Log `logs/ioslog-5.bin` -> `.txt` (227,279 bytes, 159
+  flushes): no panic, `display off ignored (sweetfb_stayon)` twice.
+  SpringBoard, backboardd, PosterBoard once each. Black background =
+  **AegirPoster** (iOS 16's default 3D Earth wallpaper, Metal) crashes 13x:
+  SIGABRT right after `SWEET SURF: AegirPoster sel 40` (IOSurface selector
+  40), later restarts `extension check-in timeout`. No GPU/Metal here, so
+  the default wallpaper can't render. Also crashing: CollectionsPoster,
+  PhotosReliveWidget, People/Batteries/Sleep/ScreenTime widgets,
+  syncdefaultsd, assetsd, MacinTalkAUSP. The red clock is iOS's styling:
+  the panel shows the shim's red/blue correctly and iOS surfaces are
+  'BGRA' = window A's B8G8R8A8, so no channel swap.
+  Next: a non-Metal default poster (gradient/emoji/photo) in the root
+  image; input (touchscreen = STM FTS over I2C, volume keys = GPIO X6/X7,
+  power = MAX77620 ONOFFSTAT, Joy-Con over UART); RTC (MAX77620).
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

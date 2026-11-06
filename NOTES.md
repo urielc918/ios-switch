@@ -793,6 +793,9 @@ iOS space contiguous; never move/cross the emuMMC).
   DMA; any error or difference -> PIO (v4/64-bit bits cleared). Log:
   `NX SD: SDMA, bounce buffer at 0x...` or the reason for PIO. Boot-arg
   `sddma=0` = PIO. CMD6 and the HS check still use PIO (before dma_setup).
+  CI run 42300293523: success, 223 applied; kernel `work/ci-42300293523/`.
+  Test image `work/img-0976-test/bl33.bin` (2271b11c..., main cmdline +
+  `sdbench=16`) on the card as "iOS NX (SD test)" (`switchroot/ios-test/`).
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

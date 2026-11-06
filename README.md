@@ -7,11 +7,11 @@ fork ios-topaz, which run XNU and the iOS 16 userland on Qualcomm phones.
 The base is ios-topaz (ARMv8.0, 4 KiB-page kernel), imported in the first
 commit. The original READMEs and notes are in `docs/upstream/`.
 
-**Status (2026-11-05):** the boot shim runs on the Switch and passes every
+**Status (2026-11-05):** XNU boots on the Switch and runs a first userland
+program as PID 1 (from a RAM disk; one CPU). The boot shim passes every
 hardware test (EL2 entry, display take-over, PSCI 1.1, GICv2 timer
-interrupts, SD card cold init and reads). The Switch patches for XNU are
-written but haven't been built yet; CI builds them on GitHub's macOS
-runners. Day-to-day notes, decisions and every hardware result:
+interrupts, SD card cold init and reads). Kernels are built by CI on
+GitHub's macOS runners. Day-to-day notes, decisions and every hardware result:
 [`NOTES.md`](NOTES.md).
 
 ## Boot chain

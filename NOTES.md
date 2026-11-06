@@ -2,8 +2,9 @@
 
 Goal: bring up XNU (xnu-8796, iOS 16 generation) on a Nintendo Switch
 (rev 0 / Erista, Tegra X1 T210), following the dipa-studio/ios-sweet
-approach. Status as of 2026-11-05: **design and fact-gathering done, no
-Switch-specific code written yet.** Session 2 (same day) re-read hekate's
+approach. **Status 2026-11-05 evening: XNU boots on the Switch to a PID 1
+init in userland** (see "Hardware log"). Earlier the same day: design and
+fact-gathering done, no Switch-specific code written yet. Session 2 (same day) re-read hekate's
 L4T launcher for the BL33 handoff and fixed the `shim-nx/` design (see
 "Session 2" below). `shim-nx/` is now **written and builds, but has not
 been run on hardware yet** (see "shim-nx status"). Session 3 added the
@@ -572,6 +573,16 @@ cpus=4 to test PSCI + the EL2 drop + SGIs.
   applied. Kernel SHA-256 a42ab1d7..., in `work/ci-42160158910/`. New
   `bl33.bin` (shim 78ed511 + this kernel + sweet-init, SHA-256
   ad2c14b8...) copied to the card over hekate UMS and verified.
+- **2026-11-05 ~20:15: USERLAND RUNS ON THE SWITCH.** Kernel 0968 (CI
+  42160158910) + sweet-init RAM disk, cmdline `debug=0xc serial=3
+  keepsyms=1 -noprogress cpus=1 rd=md0`, bl33.bin SHA-256 fc021df4...
+  The user reports the last 10 lines on screen are `SWEET init: still
+  alive`: the topaz test init is PID 1 (served by mockfs from the RAM
+  disk) and its heartbeat keeps coming. So everything works on the
+  hardware: the shim loader, XNU early boot at 4K pages on the A57, VM,
+  GICv2 + vtimer (heartbeat = select() timeouts = timer IRQs), IOKit,
+  SweetCPU (cpus=1), mockfs root, exec of a static arm64 Mach-O, syscalls
+  and the console.
 - 0968 boot: after VOL+ the screen went **black** and stayed black. Cause:
   the cmdline from `nx-sdcard.sh` lacked **`serial=3`**. The SWEET text
   console (fbcon from `/sweet-fbcon`) is registered as a serial device

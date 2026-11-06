@@ -4,8 +4,8 @@ Goal: bring up XNU (xnu-8796, iOS 16 generation) on a Nintendo Switch
 (rev 0 / Erista, Tegra X1 T210), following the dipa-studio/ios-sweet
 approach. **Status 2026-11-05 night: XNU + the iOS 16 userland run on the
 Switch from the SD card; the iOS 16 lock screen runs on the panel (NX
-AppleCLCD, 0970) with touchscreen and buttons (0971/0972); no GPU
-wallpaper, no Wi-Fi/audio/Joy-Con yet** (see "Hardware log"). Earlier the same day: design and
+AppleCLCD, 0970) with touchscreen and buttons (0971/0972) and a (blue
+fallback) wallpaper; no RTC, Wi-Fi, audio or Joy-Con yet** (see "Hardware log"). Earlier the same day: design and
 fact-gathering done, no Switch-specific code written yet. Session 2 (same day) re-read hekate's
 L4T launcher for the BL33 handoff and fixed the `shim-nx/` design (see
 "Session 2" below). `shim-nx/` is now **written and builds, but has not
@@ -566,7 +566,9 @@ iOS space contiguous; never move/cross the emuMMC).
 - **2026-11-06: TOUCH WORKS on the iOS lock screen** (0972 kernel +
   `nxtouchrot=3`, bl33.bin SHA-256 430405fc...). User: "touch working".
   Input is complete for basic use: touchscreen, power, volume, Home
-  (vol+ and vol-). Pending: make the 180-degree mapping the kernel default
+  (vol+ and vol-). The user also sees a **blue wallpaper** on the lock
+  screen: iOS falls back to a non-Metal poster after AegirPoster fails, so
+  no wallpaper fix is needed. Pending: make the 180-degree mapping the kernel default
   in fts_map (then drop nxtouchrot=3 from nx-sdcard.sh).
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.

@@ -322,6 +322,29 @@ iOS space contiguous; never move/cross the emuMMC).
   SHA-256 **c72c2d46...f2b7b1f5** (`.sha256` next to it). The image
   contains `_PanicOnCrasX` (the tweak script's launchd edit), so the
   tweaks are in.
+- **SD card layout** (sysfs, 2026-11-05 20:50; 967,245,824 sectors):
+  1 `hos_data` FAT32 32768+360808448, 2 `l4t` (Ubuntu SWR-NOB)
+  360841216+266338304, 3-9 Android `boot` 627179520+131072, `recovery`
+  627310592+131072, `dtb` 627441664+2048, `misc` 627443712+6144, `cache`
+  627449856+122880, `super` 627572736+12189696, `userdata`
+  639762432+266338304, **10 `emummc` 906100736+61143040**. The hybrid MBR
+  (read by the shim on the Switch) has FAT32 0x0C at 0x8000 and the
+  emuMMC as type **0xE0** at 0x36020000 = 906100736 (that's how hekate
+  finds it) + 0xEE. Android 3-9 = one contiguous block 627179520 ..
+  906100735 (~133 GiB). Ubuntu doesn't need to be touched.
+- Plan (scripts written, **not run**; the user runs them with sudo after
+  approving): `sudo tools/nx-sd-partition.sh /dev/sdc` (dry run: checks
+  the exact 10-partition layout and prints the MBR table) then `--apply`:
+  backs up GPT (`sgdisk --backup`), the first MiB and `sgdisk -p` to
+  `research/sd-backup/`, deletes 3-9, creates **3 `ios` AF00 627179520 ..
+  906067967** and **4 `ioslog` 8300 906067968 .. 906100735 (16 MiB)**,
+  checks the 66-byte hybrid MBR table is unchanged (restores it from the
+  backup if sgdisk touched it), rereads the table. Then `sudo
+  tools/nx-sd-writeroot.sh /dev/sdc` dd's the root image into partition 3
+  only if it is `ios` at 627179520, ends before the emummc, and the
+  emummc is still partition 10 at 906100736; verifies with cmp.
+  Boot: `tools/nx-sdcard.sh OUT KERNEL --log` (rd=sdroot0, sdroot
+  default `ios`, sdlog=1 -> `ioslog`).
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/
   fsck.hfsplus) and gptfdisk (sgdisk); the kernel has `hfsplus.ko`.
   sudo needs the user's password: they run sudo steps in their terminal.

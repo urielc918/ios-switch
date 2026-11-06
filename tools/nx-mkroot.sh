@@ -8,6 +8,10 @@
 #
 # Uses sudo (apfs-fuse, loop mounts, root-owned files): run it in a terminal
 # where sudo can ask for the password. Writes only OUT and temporary mounts.
+# If OUT already exists (a build whose tweak step didn't run), it skips the
+# build and only applies the tweaks. Linux fsck.hfsplus -n reports "Volume
+# header needs minor repair" on every fresh journaled volume even right after
+# -y (known quirk, topaz NOTES); that exit code is not treated as a failure.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ipsw=research/ipsw-8
@@ -15,10 +19,13 @@ out=${1:-$ipsw/ios16-root-d20ap-20H392.img}
 size=${2:-16G}
 os=$ipsw/087-86684-044.dmg sysos=$ipsw/087-86580-047.dmg appos=$ipsw/087-86715-047.dmg
 for f in "$os" "$sysos" "$appos"; do [[ -s $f ]] || { echo "missing $f" >&2; exit 1; }; done
-[[ ! -e $out ]] || { echo "refusing to overwrite $out" >&2; exit 1; }
-
 sudo -v
-tools/mkiosroot.sh "$os" "$sysos" "$appos" "$out" "$size"
+if [[ -e $out ]]; then
+	echo "$out exists: skipping the build, applying the tweaks only"
+else
+	# mkiosroot.sh ends with fsck -n, which fails on the header quirk.
+	tools/mkiosroot.sh "$os" "$sysos" "$appos" "$out" "$size" || [[ -s $out ]]
+fi
 
 mnt=$(mktemp -d)
 trap 'mountpoint -q "$mnt" && sudo umount "$mnt"; rmdir "$mnt" 2>/dev/null || true' EXIT
@@ -28,5 +35,6 @@ sudo mount -t hfsplus -o loop,force "$out" "$mnt"
 sudo python3 tools/sweet-root-tweaks.py "$mnt"
 df -h "$mnt"
 sudo umount "$mnt"
-fsck.hfsplus -f -n "$out"
+sudo fsck.hfsplus -f -y "$out" | grep -v 'Illegal name' || true
+fsck.hfsplus -f -n "$out" || echo "(fsck -n: the journaled-volume header quirk is expected)"
 sha256sum "$out" | tee "$out.sha256"

@@ -572,6 +572,15 @@ cpus=4 to test PSCI + the EL2 drop + SGIs.
   applied. Kernel SHA-256 a42ab1d7..., in `work/ci-42160158910/`. New
   `bl33.bin` (shim 78ed511 + this kernel + sweet-init, SHA-256
   ad2c14b8...) copied to the card over hekate UMS and verified.
+- 0968 boot: after VOL+ the screen went **black** and stayed black. Cause:
+  the cmdline from `nx-sdcard.sh` lacked **`serial=3`**. The SWEET text
+  console (fbcon from `/sweet-fbcon`) is registered as a serial device
+  (pe_serial.c `register_serial_functions`), so kernel printf only reaches
+  it with serial=3 (topaz's mkpayload default `debug=0xc serial=3 cpus=1
+  keepsyms=1` had it). Without it only the early console and panics draw
+  (that's why the 0x100 panic was visible). No panic this time = it
+  probably got past SweetCPU. `nx-sdcard.sh` default is now `debug=0xc
+  serial=3 keepsyms=1 -noprogress`. New bl33.bin SHA-256 fc021df4...
 - 19:55 the fusee-nano send reported success but the user saw no hekate; the
   user then sent hekate with **OmniRCM** (their own tool) and it worked.
   fusee-nano had worked at 13:47, so either can be used.

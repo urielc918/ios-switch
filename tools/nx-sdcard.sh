@@ -27,7 +27,7 @@ out=${1:?usage: nx-sdcard.sh OUTDIR KERNEL [options]}
 kernel=${2:?usage: nx-sdcard.sh OUTDIR KERNEL [options]}
 shift 2
 ramdisk= bl31= cpus=1 extra= init=
-cmdline="debug=0xc keepsyms=1 -noprogress"
+cmdline="debug=0xc serial=3 keepsyms=1 -noprogress"
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--ramdisk) ramdisk=$2; shift 2 ;;

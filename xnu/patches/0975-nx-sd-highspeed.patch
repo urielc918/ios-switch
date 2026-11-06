@@ -1,15 +1,16 @@
-From 2f22afc12eb25aa1a072fc72cff3edd86b3accd0 Mon Sep 17 00:00:00 2001
+From 03bafc6edc956a3e5883c129fc81b6b53fc3fa54 Mon Sep 17 00:00:00 2001
 From: x <x@x>
 Date: Fri, 6 Nov 2026 11:40:47 -0800
-Subject: [PATCH] nx-0975: SD high speed (CMD6, 48 MHz, verified by a re-read,
- boot-arg sdhs=0 to skip), boot-arg sdbench=N read benchmark
+Subject: [PATCH] nx-0975: SD high speed (CMD6, 48 MHz divider without CAR
+ gating, verified by a re-read, boot-arg sdhs=0 to skip), boot-arg sdbench=N
+ read benchmark
 
 ---
- bsd/dev/nx_sdmmc.c | 170 +++++++++++++++++++++++++++++++++++++++++++--
- 1 file changed, 166 insertions(+), 4 deletions(-)
+ bsd/dev/nx_sdmmc.c | 172 +++++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 168 insertions(+), 4 deletions(-)
 
 diff --git a/bsd/dev/nx_sdmmc.c b/bsd/dev/nx_sdmmc.c
-index 63ab28a..7aa29ef 100644
+index 63ab28a..f617cda 100644
 --- a/bsd/dev/nx_sdmmc.c
 +++ b/bsd/dev/nx_sdmmc.c
 @@ -6,7 +6,8 @@
@@ -30,24 +31,20 @@ index 63ab28a..7aa29ef 100644
  #define SD_PWRCON       0x29    /* 8 */
  #define  PWR_ON         (1u << 0)
  #define  PWR_330        (7u << 1)
-@@ -121,6 +123,16 @@ extern void (*nx_panic_log_hook)(const char *fmt, va_list *args);
+@@ -121,6 +123,12 @@ extern void (*nx_panic_log_hook)(const char *fmt, va_list *args);
  #define  AUTOCAL_ACTIVE (1u << 31)
  #define SD_IOSPARE      0x1F0
  
 +/* CAR: SDMMC1 module clock (source 0 = PLLP 408 MHz, 7.1 divider: 408 / (1 + div / 2)) */
 +#define CAR_PA                  0x60006000u
-+#define CAR_RST_DEV_L           0x004u
 +#define CAR_CLK_SOURCE_SDMMC1   0x150u
-+#define CAR_CLK_ENB_L_SET       0x320u
-+#define CAR_CLK_ENB_L_CLR       0x324u
-+#define  CAR_L_SDMMC1           (1u << 14)
 +#define  SDMMC1_DIV_DS          31u     /* 24.7 MHz, set by shim-nx */
 +#define  SDMMC1_DIV_HS          15u     /* 48 MHz, hekate's SD HS25 */
 +
  #define SECTOR          512u
  #define CHUNK_BLOCKS    2048u           /* blocks per multi-block command (1 MiB) */
  #define CMD_TIMEOUT_US  100000u
-@@ -140,6 +152,7 @@ static struct {
+@@ -140,6 +148,7 @@ static struct {
  	dev_t bdev;
  	bool ready;
  	uint32_t last_err;              /* INTSTS of the last failure */
@@ -55,7 +52,7 @@ index 63ab28a..7aa29ef 100644
  } sd;
  
  static LCK_GRP_DECLARE(nx_sdmmc_grp, "nx_sdmmc");
-@@ -219,6 +232,9 @@ wait_int(uint32_t want, uint32_t timeout_us)
+@@ -219,6 +228,9 @@ wait_int(uint32_t want, uint32_t timeout_us)
  	}
  }
  
@@ -65,7 +62,7 @@ index 63ab28a..7aa29ef 100644
  /*
   * One command. data: 0 none, 1 read, 2 write; nblk > 1 uses the block
   * count register and auto CMD12. Returns with the response in resp.
-@@ -249,7 +265,7 @@ sd_cmd(uint32_t idx, uint32_t arg, uint32_t rsp, int data, uint32_t nblk, uint32
+@@ -249,7 +261,7 @@ sd_cmd(uint32_t idx, uint32_t arg, uint32_t rsp, int data, uint32_t nblk, uint32
  	wr32(SD_ARG, arg);
  	uint32_t trn = 0;
  	if (data) {
@@ -74,7 +71,7 @@ index 63ab28a..7aa29ef 100644
  		wr16(SD_BLKCNT, (uint16_t)nblk);
  		trn = (data == 1 ? TRN_READ : 0);
  		if (nblk > 1) {
-@@ -397,6 +413,111 @@ csd_blocks(const uint32_t *r)
+@@ -397,6 +409,117 @@ csd_blocks(const uint32_t *r)
  #undef CSD_BITS
  }
  
@@ -114,13 +111,15 @@ index 63ab28a..7aa29ef 100644
 +	if (car == 0) {
 +		return;
 +	}
-+	/* As hekate's clock_sdmmc_config_clock_source: gate, set, ungate, commit. */
++	/*
++	 * Divider only, with the card clock off (as shim-nx and Linux's Tegra
++	 * clock driver do). Not hekate's gate/set/ungate: hekate runs on the
++	 * BPMP; from the A57 that version ended in an SError (0975, first try).
++	 */
 +	wr16(SD_CLKCON, (uint16_t)(rd16(SD_CLKCON) & ~CLK_CARD_EN));
-+	*(volatile uint32_t *)(car + CAR_CLK_ENB_L_CLR) = CAR_L_SDMMC1;
 +	*(volatile uint32_t *)(car + CAR_CLK_SOURCE_SDMMC1) = (0u << 29) | div;
 +	(void)*(volatile uint32_t *)(car + CAR_CLK_SOURCE_SDMMC1);
-+	*(volatile uint32_t *)(car + CAR_CLK_ENB_L_SET) = CAR_L_SDMMC1;
-+	(void)*(volatile uint32_t *)(car + CAR_RST_DEV_L);
++	__builtin_arm_dsb(0xF);
 +	delay(10);
 +	uint64_t t = now_us();
 +	while (!(rd16(SD_CLKCON) & CLK_INT_STABLE) && now_us() - t < CMD_TIMEOUT_US) {
@@ -149,6 +148,7 @@ index 63ab28a..7aa29ef 100644
 +		return error;
 +	}
 +
++	printf("NX SD: HS 1 CMD6 check\n");
 +	if ((error = sd_read_short(6, 0x00FFFFF1, st, sizeof(st)))) {
 +		printf("NX SD: CMD6 check failed %d (intsts 0x%08x)\n", error, sd.last_err);
 +		return error;
@@ -157,6 +157,7 @@ index 63ab28a..7aa29ef 100644
 +		printf("NX SD: no high speed (support %#x, group 1 %#x)\n", st[13], st[16] & 0xF);
 +		return ENOTSUP;
 +	}
++	printf("NX SD: HS 2 CMD6 switch (support %#x, max %u mA)\n", st[13], (unsigned)(st[0] << 8 | st[1]));
 +	if ((error = sd_read_short(6, 0x80FFFFF1, st, sizeof(st)))) {
 +		printf("NX SD: CMD6 switch failed %d (intsts 0x%08x)\n", error, sd.last_err);
 +		return error;
@@ -166,9 +167,11 @@ index 63ab28a..7aa29ef 100644
 +		return EIO;
 +	}
 +	delay(1000);                    /* the switch takes effect within 8 clocks */
++	printf("NX SD: HS 3 host high speed, 48 MHz\n");
 +	wr8(SD_HOSTCTL, (uint8_t)(rd8(SD_HOSTCTL) | HC_HISPD));
 +	set_module_clock(SDMMC1_DIV_HS);
 +	set_card_clock(1);
++	printf("NX SD: HS 4 checking the card at 48 MHz\n");
 +	if (!(error = wait_ready()) && !(error = sd_xfer_raw(1, 1, hs_chk, false)) &&
 +	    memcmp(hs_ref, hs_chk, SECTOR) != 0) {
 +		error = EIO;
@@ -186,7 +189,7 @@ index 63ab28a..7aa29ef 100644
  static int
  card_init(void)
  {
-@@ -447,9 +568,16 @@ card_init(void)
+@@ -447,9 +570,16 @@ card_init(void)
  	if (!sd.sdhc && (error = sd_cmd(16, SECTOR, RSP_48, 0, 0, r))) {
  		return error;
  	}
@@ -203,7 +206,7 @@ index 63ab28a..7aa29ef 100644
  /*
   * A panic flushes the console log from whatever CPU panics, without the lock
   * (another CPU may hold it, or be in the middle of a transfer): sd_active says
-@@ -779,8 +907,9 @@ card_up(void)
+@@ -779,8 +909,9 @@ card_up(void)
  		printf("NX SD: card init failed: %d (intsts 0x%08x)\n", error, sd.last_err);
  	} else {
  		sd.card_ok = true;
@@ -215,7 +218,7 @@ index 63ab28a..7aa29ef 100644
  	}
  	sd.card_error = error;
  	return error;
-@@ -808,6 +937,38 @@ lookup(const char *want, uint64_t *first, uint64_t *count)
+@@ -808,6 +939,38 @@ lookup(const char *want, uint64_t *first, uint64_t *count)
  	return error;
  }
  
@@ -254,7 +257,7 @@ index 63ab28a..7aa29ef 100644
  static int
  nx_sdmmc_init(void)
  {
-@@ -825,6 +986,7 @@ nx_sdmmc_init(void)
+@@ -825,6 +988,7 @@ nx_sdmmc_init(void)
  	}
  	sd.first_block = first;
  	sd.nblocks = count;

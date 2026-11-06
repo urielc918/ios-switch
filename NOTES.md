@@ -743,7 +743,26 @@ iOS space contiguous; never move/cross the emuMMC).
   `work/img-0975/test/bl33.bin` (cd9a7016..., `sdbench=16`) for
   `switchroot/ios-test/` "iOS NX (SD test)", and `work/img-0975/base/bl33.bin`
   (8c08ec13..., `sdhs=0 sdbench=16`) for `switchroot/ios-base/`
-  "iOS NX (SD baseline)". Not on the card yet (card was unplugged).
+  "iOS NX (SD baseline)". Both put on the card (entries ios-nx-test.ini,
+  ios-nx-base.ini).
+- **0975 first hardware test (2026-11-06 ~12:05)**:
+  - Baseline (`sdhs=0`, log `work/ioslog-sd-baseline.bin/.txt`): boots;
+    `NX SD: bench 16384 KiB in 3098 ms = 5414 KB/s at 24.7 MHz`. So PIO
+    reaches only ~44% of the 12.4 MB/s bus rate: per-word copy overhead
+    is large (DMA would help).
+  - High speed: **panic** before the `NX SD: ... card` line (photo
+    `work/kernelpanic-highspeed.jpg`): `panic(cpu 0 caller
+    0xfffffff007b18324): Unhandled implementation specific error` = an
+    SError (asynchronous abort), right after `ifnet_attach ... stf0`, i.e.
+    in card_up. No 0975 error message was printed, so CMD6 check/switch
+    returned OK and the fault came at/after the clock change. The ioslog
+    dump was identical to the baseline one (log never started).
+  - Suspect: hekate's CLK_ENB_L_CLR/SET gating of SDMMC1 around the divider
+    write (hekate runs on the BPMP; from the A57 an access to the gated or
+    not-yet-ungated module = SError). **Fix (0975 replaced in place)**:
+    divider write only, card clock off, readback + DSB, like shim-nx and
+    Linux. Step markers `NX SD: HS 1..4` now print, so another fault shows
+    which step.
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

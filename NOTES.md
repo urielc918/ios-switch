@@ -796,6 +796,18 @@ iOS space contiguous; never move/cross the emuMMC).
   CI run 42300293523: success, 223 applied; kernel `work/ci-42300293523/`.
   Test image `work/img-0976-test/bl33.bin` (2271b11c..., main cmdline +
   `sdbench=16`) on the card as "iOS NX (SD test)" (`switchroot/ios-test/`).
+- **0976 on hardware (2026-11-06 ~14:08, log `work/ioslog-sd-dma.bin/.txt`)**:
+  **DMA works**: `NX SD: SDMA, bounce buffer at 0x103abc000` (above 4 GB,
+  64-bit addressing OK), `NX SD: bench 16384 KiB in 738 ms = 22704 KB/s at
+  48.0 MHz` (was 6128 KB/s with PIO at 48 MHz, 5414 at 24.7 MHz): x3.7, near
+  the 24 MB/s bus limit. No SD errors; SpringBoard starts. The 3 "panic" hits
+  are the usual `gPanicBase` notices and `exec DumpPanic`.
+  Userland start, first launchd `[System Event]` -> the event at `exec
+  SpringBoard` (mach time deltas / 19.2 MHz assumed; the absolute values
+  include time spent in hekate, so only deltas compare): **5.43 s** (24.7 MHz
+  PIO) -> 4.88 s (48 MHz PIO) -> **1.94 s** (48 MHz DMA). User: "boot is faster".
+  Next for SD: UHS-I (1.8 V signalling + tuning, SDR104) would lift the bus
+  limit; not needed right now.
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

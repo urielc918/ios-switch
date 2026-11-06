@@ -2,9 +2,9 @@
 
 Goal: bring up XNU (xnu-8796, iOS 16 generation) on a Nintendo Switch
 (rev 0 / Erista, Tegra X1 T210), following the dipa-studio/ios-sweet
-approach. **Status 2026-11-05 night: XNU + the iOS 16 userland (launchd,
-188 daemons) run on the Switch, root on the SD card; SpringBoard waits for
-a display driver** (see "Hardware log"). Earlier the same day: design and
+approach. **Status 2026-11-05 night: XNU + the iOS 16 userland run on the
+Switch from the SD card; backboardd + SpringBoard draw on the panel (Apple
+logo seen) through the NX AppleCLCD (patch 0970); no input yet** (see "Hardware log"). Earlier the same day: design and
 fact-gathering done, no Switch-specific code written yet. Session 2 (same day) re-read hekate's
 L4T launcher for the BL33 handoff and fixed the `shim-nx/` design (see
 "Session 2" below). `shim-nx/` is now **written and builds, but has not
@@ -454,6 +454,23 @@ iOS space contiguous; never move/cross the emuMMC).
 - CI run 42171683534 (0970): success, 217 applied. bl33.bin (red shim +
   0970 kernel, cmdline with sweetfb_noconsole=1, SHA-256 24e7e917...)
   copied to the card (left mounted).
+- **First iOS GUI on the Switch (0970 boot, ~22:40): the Apple logo.**
+  User: "got to apple logo and went to black screen before showing apple
+  and a black screen a second time". Log `logs/ioslog-4.bin` -> `.txt`
+  (256,763 bytes, 503 flushes, 4210 lines): `SWEET FB: AppleCLCD 720x1280
+  stride 2880 at 0xf0000000, default surface 1, presented as 750x1334`,
+  `modes published: 750x1334 at 60 Hz`; backboardd opened the framebuffer
+  (sels 57,15,22,8,28,29,33,74,12,6,27,17,84,50), swaps of 750x1334 BGRA
+  surfaces (bpr 3072) 2..20. **SpringBoard and backboardd started once
+  each, no crash**; SpringBoard draws (CoreAnimation messages, IOSurfaces).
+  The black screens = **`SWEET FB: display off`** (lines 1754, 3201) from
+  iOS power management (SpringBoard opened IOPMrootDomain right after):
+  idle display-off with no input, faded to black by the driver. Fix:
+  topaz's `sweetfb_stayon=1`, now in nx-sdcard.sh's SD-root default.
+  Also: 1347 execs; crash loops of fairplayd.H2 (187), bluetoothd (182, no
+  BT hardware), syncdefaultsd, assetsd, CollectionsPoster, widgets. Clock
+  shows 1969 (no RTC driver). bl33.bin with stayon (SHA-256 55b6ff9d...)
+  on the card.
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

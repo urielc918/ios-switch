@@ -311,9 +311,17 @@ must never be overwritten, resized or moved** (user, 2026-11-05).
   device-independent (BUILD 20H392 = the iPhone 8 build too; launchd jobs,
   containers, DataMigration, audio, MediaToolbox, SpringBoard, Setup,
   activation), so it can be used unchanged.
-- Tools missing on this machine: apfs-fuse, hfsprogs (mkfs.hfsplus/
-  fsck.hfsplus), gptfdisk (sgdisk). The kernel has `hfsplus.ko`. The user
-  has to install them (pacman: gptfdisk; AUR: apfs-fuse, hfsprogs).
+- **Root image built** (user ran `tools/nx-mkroot.sh` twice: the first run
+  stopped at mkiosroot.sh's final `fsck -n` (the journaled-header quirk
+  exits non-zero), the fixed wrapper then applied the tweaks to the
+  existing image): `research/ipsw-8/ios16-root-d20ap-20H392.img`, 16 GiB
+  case-sensitive journaled HFS+ "iOSRoot", fsck -y "appears to be OK",
+  SHA-256 **c72c2d46...f2b7b1f5** (`.sha256` next to it). The image
+  contains `_PanicOnCrasX` (the tweak script's launchd edit), so the
+  tweaks are in.
+- Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/
+  fsck.hfsplus) and gptfdisk (sgdisk); the kernel has `hfsplus.ko`.
+  sudo needs the user's password: they run sudo steps in their terminal.
 
 `tools/mkadt-nx.py OUT [--dump] [--product D20AP.adt] [--cpus N]`
 (imports helpers from `mkadt.py`):

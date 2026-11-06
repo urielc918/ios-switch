@@ -451,6 +451,9 @@ iOS space contiguous; never move/cross the emuMMC).
   matters with a touch driver.
   `nx-sdcard.sh`: SD-root boots add `sweetfb_noconsole=1` (the kernel
   console stops drawing after iOS's first frame; `--console` keeps it).
+- CI run 42171683534 (0970): success, 217 applied. bl33.bin (red shim +
+  0970 kernel, cmdline with sweetfb_noconsole=1, SHA-256 24e7e917...)
+  copied to the card (left mounted).
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

@@ -357,8 +357,12 @@ iOS space contiguous; never move/cross the emuMMC).
   627179520+278888448; sdc4 `ioslog` 906067968+32768; **sdc10 emummc
   906100736+61143040 unchanged**. MBR table before =
   `000101000cfeffbd00800000008081150000 0000e00000000000023600f8a403 00000000ee00000001000000ffffa639 ... 55aa`
-  (same in the backup). Pending: the user's `sudo cmp -n 512 backup
-  /dev/sdc` to confirm sector 0 is unchanged.
+  (same in the backup). **User ran `sudo cmp -n 512 backup /dev/sdc`:
+  "MBR identical"**: sector 0 (hybrid MBR with the emuMMC 0xE0 entry) is
+  unchanged. sgdisk's "error" was only its reaction to the overlapping
+  hybrid entries. Repartitioning done. Lesson for later sgdisk runs on
+  this card: expect that warning and a non-zero exit, and verify by
+  rereading + comparing sector 0 instead.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/
   fsck.hfsplus) and gptfdisk (sgdisk); the kernel has `hfsplus.ko`.
   sudo needs the user's password: they run sudo steps in their terminal.

@@ -551,6 +551,17 @@ iOS space contiguous; never move/cross the emuMMC).
 - CI run 42179750051 (0972): success, 219 applied; kernel in
   `work/ci-42179750051/`. bl33.bin (no sweetfb_stayon, SHA-256 4bcceeec...)
   copied to the card (left mounted).
+- **Touch on hardware (0972, logs 7 and 8)**: `NX TOUCH: chip 0x3670 fw
+  0x100 (err 0)`, `reset ready, sensing on`; taps arrive as clean
+  enter/leave pairs and reach SweetHID (`SWEET HID: touch 0 down at x,y`).
+  The display came back by itself after the boot-time display-off (log 8:
+  off 984 -> on 1486 ...); in log 7 the user stopped before that.
+  **Mapping was rotated 180 degrees**: the user's last tap, top right of
+  the framebuffer (~719,0), arrived at (24,1255) bottom left. So the true
+  mapping is fb x = ty, fb y = 1279 - tx (Nyx's VIC 270 + 180). Fix
+  without a rebuild: boot-arg **`nxtouchrot=3`** (flip x and y), now in
+  nx-sdcard.sh's SD-root default. (Fold it into fts_map's default in the
+  next kernel patch.) Raw ranges seen: x 14..~290, y ~117..708.
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

@@ -763,6 +763,16 @@ iOS space contiguous; never move/cross the emuMMC).
     divider write only, card clock off, readback + DSB, like shim-nx and
     Linux. Step markers `NX SD: HS 1..4` now print, so another fault shows
     which step.
+- **0975 (fixed) on hardware (2026-11-06 ~13:41, CI 42287036558, image
+  `work/img-0975b/bl33.bin` 2c6365c3... in `switchroot/ios-test/`, log
+  `work/ioslog-sd-highspeed2.bin/.txt`)**: **boots, 48 MHz works**:
+  `HS 2 CMD6 switch (support 0x3, max 200 mA)`, `HS 4 checking the card at
+  48 MHz` passed, `high speed 48.0 MHz`, no SD errors, SpringBoard starts.
+  `NX SD: bench 16384 KiB in 2737 ms = 6128 KB/s at 48.0 MHz` vs 5414 KB/s
+  at 24.7 MHz: **only +13%**. 16 MiB = 4 Mi words in ~2.7 s = ~0.65 us per
+  SD_BUFFER read: the polled PIO copy (one uncached device read per word)
+  is the limit, not the bus (24 MB/s at 48 MHz). Next for speed: ADMA2
+  (DMA) in nx_sdmmc.c; the card clock is no longer the bottleneck.
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

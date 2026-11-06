@@ -259,8 +259,9 @@ static void test_sd(void)
 			continue;
 		if (e[4] == 0xEE)
 			gpt = 1;
-		con_hex2("MBR", "type=", e[4], "lba=", le32(e + 8));
-		con_hex2("", "", 0, "size=", le32(e + 12));
+		static const char hex[] = "0123456789ABCDEF";
+		char label[8] = { 'M', 'B', 'R', ' ', hex[e[4] >> 4], hex[e[4] & 15], 0 };
+		con_hex2(label, "lba=", le32(e + 8), "n=", le32(e + 12));
 	}
 	if (gpt)
 		show_gpt(&sd);
@@ -322,16 +323,22 @@ void shim_main(uint64_t entry_el, uint64_t entry_x0)
 		stage = "idle";
 		idle();
 	}
+	/*
+	 * The tests can fill the panel (39 rows at SCALE 2) and rows below
+	 * the edge are dropped: prompt now, then a fresh screen for the loader.
+	 */
+	const volatile char *ab = env_get("nx_autoboot");
+	if (!(ab && *ab == '1')) {
+		con_str("XNU", "VOL+ = boot xnu  VOL- = RCM");
+		while (!vol_up_pressed())
+			poll_rcm();
+	}
+	con_clear(DKBLUE);
+	con_str("NX SHIM", "loader");
 	const char *err = loader_check(p);
 	if (err) {
 		con_str("XNU", err);
 		idle();
-	}
-	const volatile char *ab = env_get("nx_autoboot");
-	if (!(ab && *ab == '1')) {
-		con_str("", "VOL+ = boot xnu  VOL- = RCM");
-		while (!vol_up_pressed())
-			poll_rcm();
 	}
 	stage = "xnu copy";
 	err = loader_boot(p, (uintptr_t)con_fb);

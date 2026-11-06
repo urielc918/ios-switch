@@ -344,7 +344,7 @@ HEAD), and so what the NX patches have to deal with:
 
 ## XNU NX patches (2026-11-05, not built yet)
 
-`xnu/patches/0960-0967-nx-*.patch` (first numbered 0200-0207, see "CI" for why they moved), made on branch `nx` of
+`xnu/patches/0960-0968-nx-*.patch` (0960-0967 first numbered 0200-0207, see "CI" for why they moved), made on branch `nx` of
 `work/xnu-src/xnu` (`master` = pristine + topaz series, unchanged).
 Checked: all eight apply in order with `git apply --check` on a `master`
 worktree, and the result is identical to `nx`. **Not compiled**: XNU only
@@ -555,6 +555,19 @@ cpus=4 to test PSCI + the EL2 drop + SGIs.
   mass storage (Nyx Tools -> USB Tools -> SD Card): `bl33.bin` +
   `ios-nx.ini` verified with cmp; the earlier diagnostics shim was kept as
   `switchroot/ios/bl33-shim.bin` (copy it over bl33.bin to go back).
+- **20:0x FIRST XNU BOOT ON THE SWITCH** (kernel of CI run 42123957935,
+  `--init` payload, cpus=1, hekate via OmniRCM -> "iOS NX" -> shim).
+  Shim display: the tests filled all 39 rows, so the screen "stopped" at
+  `PAYLOAD at=AA00D000 end=AB03EC90` (the loader's lines and its VOL+
+  prompt were drawn below the edge). The user pressed VOL+ anyway.
+  XNU then ran through early boot, VM, GICv2 init, timer and IOKit up to
+  CPU matching, and **panicked in SweetCPU::startAll: `SWEET CPU: expected
+  boot MPIDR 0x100 and logical CPU 0, got 0x0/0`**: topaz's check that it
+  boots on gold core 0x100. Fixed in **0968-nx-boot-cpu** (NX expects
+  0x0; CPU name "Cortex-A57"). The topology check in
+  `SweetCPU::start` (Aff1 <= 1, Aff0 <= 3) already fits the Switch.
+  Shim fix (commit 78ed511): the boot prompt goes on the test screen
+  (one line per MBR entry now), and the loader gets a fresh screen.
 - 19:55 the fusee-nano send reported success but the user saw no hekate; the
   user then sent hekate with **OmniRCM** (their own tool) and it worked.
   fusee-nano had worked at 13:47, so either can be used.

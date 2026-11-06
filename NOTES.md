@@ -829,6 +829,9 @@ iOS space contiguous; never move/cross the emuMMC).
   a row on battery with 0% or < 3300 mV. Poll every 10 s; log `NX BATTERY:
   ...` every 30 polls (5 min) and at critical, plus `SWEET BATTERY:
   MAX17050 fuel gauge, ...` once.
+  CI run 42308392770: success, 224 applied; kernel `work/ci-42308392770/`.
+  Test image `work/img-0977-test/bl33.bin` (a02dc939..., main cmdline) on
+  the card as "iOS NX (battery test)" (`switchroot/ios-test/`).
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

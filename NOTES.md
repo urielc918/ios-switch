@@ -299,7 +299,14 @@ sgdisk commands first.
   OS = `087-86684-044.dmg` (4.6 GB), Cryptex1,SystemOS = `087-86580-047.dmg`
   (2.7 GB), Cryptex1,AppOS = `087-86715-047.dmg` (10 MB, same file as in
   topaz's iPhone X IPSW), RestoreRamDisk 087-86719-047 / update
-  087-86622-047. Downloading the three into `research/ipsw-8/`.
+  087-86622-047. **Downloaded** to `research/ipsw-8/` (CRC-32 ok,
+  2026-11-05 20:24): OS 4,601,371,757 B, SystemOS 2,743,074,816 B, AppOS
+  10,485,760 B (+ their .root_hash/.trustcache/.mtree). Next:
+  `sudo tools/mkiosroot.sh research/ipsw-8/087-86684-044.dmg
+  research/ipsw-8/087-86580-047.dmg research/ipsw-8/087-86715-047.dmg
+  research/ipsw-8/ios16-root-d20ap-20H392.img 16G` once apfs-fuse and
+  hfsprogs are installed (check `tools/sweet-root-tweaks.py` for
+  iPhone X-specific tweaks before using the image).
 - Tools missing on this machine: apfs-fuse, hfsprogs (mkfs.hfsplus/
   fsck.hfsplus), gptfdisk (sgdisk). The kernel has `hfsplus.ko`. The user
   has to install them (pacman: gptfdisk; AUR: apfs-fuse, hfsprogs).

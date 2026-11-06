@@ -2,8 +2,11 @@
 # Assemble the SD card files for booting XNU on the Switch through hekate.
 #
 #   tools/nx-sdcard.sh OUTDIR KERNEL [--ramdisk ROOT.img] [--bl31 bl31.bin]
-#                      [--cmdline "..."] [--cpus N] [--log] [--init]
+#                      [--cmdline "..."] [--cpus N] [--log] [--init] [--console]
 #
+# --console: with the SD root, keep the kernel text console drawn after
+# iOS's first frame (default: sweetfb_noconsole=1, the GUI owns the screen;
+# the console still goes to the SD log with --log).
 # --init: the RAM disk is tools/sweet-init.S as a static Mach-O (built here
 # with clang -target arm64-apple-ios16.0 + tools/mkinit.py). With rd=md0
 # mockfs serves it as /sbin/launchd: the first test of the kernel reaching
@@ -26,7 +29,7 @@ TREE=$(cd "$(dirname "$0")/.." && pwd)
 out=${1:?usage: nx-sdcard.sh OUTDIR KERNEL [options]}
 kernel=${2:?usage: nx-sdcard.sh OUTDIR KERNEL [options]}
 shift 2
-ramdisk= bl31= cpus=4 extra= init=
+ramdisk= bl31= cpus=4 extra= init= console=
 cmdline="debug=0xc serial=3 keepsyms=1 -noprogress"
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -36,6 +39,7 @@ while [ $# -gt 0 ]; do
 	--cpus) cpus=$2; shift 2 ;;
 	--log) extra="$extra sdlog=1"; shift ;;
 	--init) init=1; shift ;;
+	--console) console=1; shift ;;
 	*) echo "unknown option $1" >&2; exit 1 ;;
 	esac
 done
@@ -58,6 +62,7 @@ else
 	# ignition_level=1 (dyld finds the shared cache under /System/Library/Caches);
 	# launchd's job cache without AMFI; no watchdog.
 	cmdline="$cmdline cpus=$cpus rd=sdroot0 sdrw=1 rootrw=1 unentitled_ios_sim_launch=1 ignition_level=1 launchd_unsecure_cache=1 wdt=-1 wdt_test=no_user_checkin"
+	[ -n "$console" ] || cmdline="$cmdline sweetfb_noconsole=1"
 fi
 python3 "$TREE/tools/mkadt-nx.py" "$work/nx.adt" --cpus 4
 python3 "$TREE/tools/mkpayload.py" "$kernel" "$work/nx.adt" "$work/payload.bin" \

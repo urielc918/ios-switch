@@ -430,6 +430,27 @@ iOS space contiguous; never move/cross the emuMMC).
   corpses being created.`: no display, because AppleCLCD returns false under
   NX (patch 0964). **Next: an NX display driver** (AppleCLCD on the Tegra
   DC framebuffer at 0xF0000000, 720x1280, presented as 750x1334 @2x).
+- **0970-nx-display: AppleCLCD on the Switch** (SweetFramebuffer.cpp).
+  topaz's driver already had a hardware-free copy path: with fVig0/fCtl0
+  (MDP direct scanout), fDsi (panel commands), fIntf1 (refresh counter)
+  and fFlip/fCons (flip buffers, console shadow) all NULL, `present()`
+  composes every swap layer straight into fPixels (the boot framebuffer,
+  mapped write-combined by `sweet_surface_create_physical`) at the vsync
+  timer's pace (sweetfb_hz, default 10 -> every 6th 60 Hz tick).
+  directPresent needs fVig0 and only GPU-pool surfaces (topaz Adreno)
+  take the direct path. `topaz_surface_drawn` returns at once without
+  the GPU; setPanelOn/Level are only called with fDsi; display-off fades
+  fPixels in place. Under NX, `start()` no longer returns false: it skips
+  topaz_modem/audio/adreno, the MDP/DSI/INTF mappings, the backlight
+  service and the MDP flip/console-shadow setup. It keeps the surfaces,
+  vsync timer, presenter thread, the empty IOAcceleratorES (no 30 s
+  QuartzCore wait), modes and the user client. Logical screen **750x1334**
+  (iPhone 8, centered 720x1280 shown: offset 12,27), dot pitch 326. Pixel
+  format BGRA = window A's B8G8R8A8. showDirect's fCtl0 poll is now
+  NULL-guarded. Not done: touch geometry in SweetHID.cpp (1125x2436), only
+  matters with a touch driver.
+  `nx-sdcard.sh`: SD-root boots add `sweetfb_noconsole=1` (the kernel
+  console stops drawing after iOS's first frame; `--console` keeps it).
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/
   fsck.hfsplus) and gptfdisk (sgdisk); the kernel has `hfsplus.ko`.
   sudo needs the user's password: they run sudo steps in their terminal.
@@ -490,7 +511,7 @@ HEAD), and so what the NX patches have to deal with:
 
 ## XNU NX patches (2026-11-05, not built yet)
 
-`xnu/patches/0960-0969-nx-*.patch` (0960-0967 first numbered 0200-0207, see "CI" for why they moved), made on branch `nx` of
+`xnu/patches/0960-0970-nx-*.patch` (0960-0967 first numbered 0200-0207, see "CI" for why they moved), made on branch `nx` of
 `work/xnu-src/xnu` (`master` = pristine + topaz series, unchanged).
 Checked: all eight apply in order with `git apply --check` on a `master`
 worktree, and the result is identical to `nx`. **Not compiled**: XNU only

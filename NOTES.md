@@ -294,7 +294,8 @@ chose to give the **switchroot Android partitions** on the SD card to iOS
 (the card has no free space: FAT32 172 GB, Ubuntu 127 GB, Android
 (several small + 5.8 GB + 127 GB), emuMMC 29.2 GB). Identify the Android
 partitions by GPT name before changing anything, and show the user the
-sgdisk commands first.
+sgdisk commands first. **The emuMMC partition (likely the 29.2 GB one)
+must never be overwritten, resized or moved** (user, 2026-11-05).
 - D20AP 16.7.16 BuildManifest (`research/ipsw-8/BuildManifest.plist`):
   OS = `087-86684-044.dmg` (4.6 GB), Cryptex1,SystemOS = `087-86580-047.dmg`
   (2.7 GB), Cryptex1,AppOS = `087-86715-047.dmg` (10 MB, same file as in

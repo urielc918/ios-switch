@@ -66,7 +66,7 @@ else
 	# (sweetfb_stayon=1 is no longer needed: the power button wakes the display, patch 0971.)
 	# Touch: the Nyx-derived default mapping is rotated 180 degrees on this
 	# Switch (a top-right tap arrived at the bottom left): flip both axes.
-	cmdline="$cmdline nxtouchrot=3"
+	# (touch orientation is the kernel default since patch 0973)
 fi
 python3 "$TREE/tools/mkadt-nx.py" "$work/nx.adt" --cpus 4
 python3 "$TREE/tools/mkpayload.py" "$kernel" "$work/nx.adt" "$work/payload.bin" \

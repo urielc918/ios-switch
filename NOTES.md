@@ -570,6 +570,18 @@ iOS space contiguous; never move/cross the emuMMC).
   screen: iOS falls back to a non-Metal poster after AegirPoster fails, so
   no wallpaper fix is needed. Pending: make the 180-degree mapping the kernel default
   in fts_map (then drop nxtouchrot=3 from nx-sdcard.sh).
+- **0973-nx-rtc (written, pushed, NOT yet tested; CI result unchecked)**:
+  SweetPlatformExpert (NX) publishes resource "IORTC" (IOKitInitializeTime
+  otherwise waits 30 s every boot) and overrides getGMTTimeOfDay = MAX77620
+  RTC (I2C5 0x68, `nx_rtc_read()` in nx_input.c: UPDATE0=0x10, 20 ms, regs
+  0x03/0x07-0x0D, binary, logs `NX RTC: 20YY-MM-DD hh:mm:ss ... = epoch`)
+  + boot-arg `nxtimeoff` (signed s); setGMTTimeOfDay never writes the RTC.
+  Touch 180-degree mapping is now the kernel default (nxtouchrot=3 removed
+  from nx-sdcard.sh; only valid with a 0973 kernel!). nx_i2c_xfer maps the
+  I2C block on first use. Not syntax-checked.
+  User's hekate nyx.ini: `timeoffset=3840` (hex = 14400 s), `timedst=1`.
+  PC time 2026-11-06 00:08 PST = 08:08 UTC. Next: boot 0973 once, compare
+  the logged raw RTC time with real UTC, set `nxtimeoff` in nx-sdcard.sh.
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/
@@ -632,7 +644,7 @@ HEAD), and so what the NX patches have to deal with:
 
 ## XNU NX patches (2026-11-05, not built yet)
 
-`xnu/patches/0960-0972-nx-*.patch` (0960-0967 first numbered 0200-0207, see "CI" for why they moved), made on branch `nx` of
+`xnu/patches/0960-0973-nx-*.patch` (0960-0967 first numbered 0200-0207, see "CI" for why they moved), made on branch `nx` of
 `work/xnu-src/xnu` (`master` = pristine + topaz series, unchanged).
 Checked: all eight apply in order with `git apply --check` on a `master`
 worktree, and the result is identical to `nx`. **Not compiled**: XNU only

@@ -1,7 +1,7 @@
 /*
  * Switch (T210) BL33 bring-up shim. Stages, each visible on the panel:
  *   1. paint hekate's framebuffer          -> the shim runs at all
- *   2. move DC window A to our framebuffer -> display programming works
+ *   2. move DC window A to our framebuffer -> display programming works (red)
  *   3. text console: CPU/EL state, BL33 env, PSCI, GICv2 + virtual timer,
  *      SD card cold init and sector 0
  *   4. if build.sh appended an xnu payload: VOL+ (or ini nx_autoboot=1)
@@ -22,7 +22,7 @@
 #define BL33_ENV_MAGIC	0x33334C42
 
 #define DKGREEN	0xff004000U
-#define DKBLUE	0xff000040U
+#define BGRED	0xffa00000U	/* shim background (stage 2 on); panics stay BLUE */
 #define GREY	0xff808080U
 
 static const char *stage = "start";
@@ -281,11 +281,11 @@ void shim_main(uint64_t entry_el, uint64_t entry_x0)
 	struct dc_state dc = { 0 };
 	int full = -1;
 	if (!vol_up_pressed()) {
-		fill(SHIM_FB, DKBLUE);
+		fill(SHIM_FB, BGRED);
 		full = display_take_over(SHIM_FB, &dc);
 		con_fb = (volatile uint32_t *)SHIM_FB;
 	}
-	con_clear(DKBLUE);
+	con_clear(BGRED);
 
 	/* Stage 3. */
 	con_str("NX SHIM", __DATE__ " " __TIME__);
@@ -333,7 +333,7 @@ void shim_main(uint64_t entry_el, uint64_t entry_x0)
 		while (!vol_up_pressed())
 			poll_rcm();
 	}
-	con_clear(DKBLUE);
+	con_clear(BGRED);
 	con_str("NX SHIM", "loader");
 	const char *err = loader_check(p);
 	if (err) {

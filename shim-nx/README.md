@@ -30,7 +30,7 @@ The panel is portrait: hold the Switch upright.
 
 1. **Dark green, full screen**: the shim is running and painting hekate's
    framebuffer (0xF5A00000).
-2. **Dark blue**: window A now scans out the shim's own framebuffer
+2. **Red**: window A now scans out the shim's own framebuffer
    (0xF0000000). If the screen stays plain green or goes black, the window
    switch failed. Boot again **holding volume-up**: that skips the switch
    and draws everything into hekate's buffer (`DC skip` on screen).
@@ -53,7 +53,7 @@ The panel is portrait: hold the Switch upright.
      with MBR entries and, for GPT, the first four partitions.
    - On failure, `stage=` is the last SD command attempted and `intsts=`
      is the SDHCI interrupt status (normal | error << 16).
-4. A blue `PANIC` screen shows ESR/ELR/FAR for any unexpected exception.
+4. A **blue** `PANIC` screen shows ESR/ELR/FAR for any unexpected exception.
 
 **Volume-down at any time** (also on the panic screen) reboots to RCM, for
 the next `fusee-nano` try.

@@ -392,6 +392,9 @@ iOS space contiguous; never move/cross the emuMMC).
   flag in `sd_xfer` lets a transfer on another CPU finish (200 ms), else it
   resets CMD/DAT; after a panic only the panicking CPU can start
   transfers.
+- CI run 42169570455 (0969): success, 216 patches applied. Kernel
+  `work/ci-42169570455/` contains `PANIC (NX SD LOG)`. Full-iOS bl33.bin
+  (SHA-256 7414ab8d...) copied to the card (left mounted).
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/
   fsck.hfsplus) and gptfdisk (sgdisk); the kernel has `hfsplus.ko`.
   sudo needs the user's password: they run sudo steps in their terminal.

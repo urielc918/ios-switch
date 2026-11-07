@@ -1273,6 +1273,31 @@ iOS space contiguous; never move/cross the emuMMC).
     jc_deinit before the L4T launch). 0986 has to set the clock source,
     enable the clocks and release reset.
   The Joy-Cons run from their own batteries; rail 5 V is for charging.
+- **0986-nx-joycon-uart (written, syntax-checked, pushed for CI)**, with
+  nxjc=1 (after the 0985 report, in a kernel thread):
+  - **Shared 5 V regulator**: `reg5v_set(user, on)` with users FAN /
+    JC_L / JC_R (hekate regulator_5v.c bitmask), on with the first user,
+    off with the last, own pinmux/PMC mappings + mutex. The fan now calls
+    reg5v_set(REG5V_FAN, ...) instead of switching the regulator itself.
+  - Per attached rail (detect as 0985, TX pins restored to the UART):
+    reg5v on + charge enable high (L CC3, R K3); UART clock: CAR reset,
+    clock off, CLK_SOURCE_UARTB 0x17C / UARTC 0x1A0 = DIV_EN (bit 24) | 49
+    (PLLP 408 / 25.5 = 16 MHz), clock on, 2 us, reset off (UART-B L bit 7
+    via RST_DEV_L_SET 0x300 / CLK_ENB_L_SET 0x320; UART-C H bit 23 via
+    0x308 / 0x328; CLR = +4); UART (0x70006000 + 0x40 B / + 0x200 C, hekate
+    uart.c): IER 0, LCR DLAB|8n1, DLL 1, DLM 0, LCR 8n1, FCR FIFO, 20 us,
+    MCR 0, 96 us, FCR clear RX/TX, MCR RTS (manual RTS), drain RX,
+    IRDA_CSR |= TXD|RTS invert.
+  - Protocol (hekate joycon.c constants): wake A1 A2 A3 A4; handshake 19 01
+    03 07 00 A5 02 01 7E 00 00 00 -> reply cmd 0xA5 (10 tries, 4 ms);
+    get-info 19 01 03 07 00 91 01 00 00 00 00 24 -> reply cmd 0x94 subcmd
+    1 status 0, payload[0] type (1 L, 2 R, 0x2x Hori), [1..6] MAC
+    reversed. Receive = read until 250 us idle with RTS dropped. Reply
+    magic 19 81 03, payload at byte 12.
+  - Log: `NX JC: <side>: handshake ok (try N)`, `... type 0x1 (Joy-Con (L)),
+    MAC ...`, or the failure with the first reply bytes. UARTs stay at
+    1 Mbaud; no HID input yet (0987: 3 Mbaud switch, HID connect, input
+    reports, iOS buttons). Charging stays enabled for attached rails.
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

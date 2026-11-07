@@ -1,0 +1,352 @@
+From 01b1cd89d5eea6bec1f884bae8e5cf55e73fee91 Mon Sep 17 00:00:00 2001
+From: x <x@x>
+Date: Fri, 6 Nov 2026 23:50:07 -0800
+Subject: [PATCH] nx-0986: Joy-Con bring-up with nxjc=1 (rail power, UART-B/C
+ at 1 Mbaud, wake, handshake, device info) and a shared 5V regulator user
+ count for fan and rails
+
+---
+ bsd/dev/nx_input.c | 287 +++++++++++++++++++++++++++++++++++++++++----
+ 1 file changed, 262 insertions(+), 25 deletions(-)
+
+diff --git a/bsd/dev/nx_input.c b/bsd/dev/nx_input.c
+index 1d24f91..a3464fa 100644
+--- a/bsd/dev/nx_input.c
++++ b/bsd/dev/nx_input.c
+@@ -1161,7 +1161,6 @@ nx_cpu_restore(void)
+ #define FAN_MAX                 236u
+ 
+ static vm_offset_t fan_pwm, fan_pinmux, fan_pmc;
+-static bool fan_5v_on;
+ 
+ static void
+ gpio_msk(uint32_t base_off, uint32_t port, uint32_t pin, uint32_t val)
+@@ -1173,30 +1172,51 @@ gpio_msk(uint32_t base_off, uint32_t port, uint32_t pin, uint32_t val)
+ #define GPIO_MSK_OE             0x90u
+ #define GPIO_MSK_OUT            0xA0u
+ 
++/*
++ * Shared 5 V regulator (fan and Joy-Con rails), as hekate's
++ * power/regulator_5v.c: a user bitmask, switched on with the first user and
++ * off with the last (the fan used to switch it off on its own, which would
++ * also cut the Joy-Con rails). Own mappings, so it works with nxfan=0 too.
++ */
++#define REG5V_FAN               (1u << 0)
++#define REG5V_JC_L              (1u << 1)
++#define REG5V_JC_R              (1u << 2)
++static uint32_t reg5v_users;
++static vm_offset_t reg5v_pinmux, reg5v_pmc;
++static LCK_MTX_DECLARE(reg5v_lock, &nx_input_grp);
++
+ static void
+-fan_5v(bool on)
++reg5v_set(uint32_t user, bool on)
+ {
+-	if (on == fan_5v_on) {
+-		return;
+-	}
+-	if (on) {
+-		wr32(fan_pinmux + PINMUX_SATA_LED_ACTIVE, 1);
+-		gpio_msk(GPIO_MSK_CNF, GPIO_PORT_A, 5, 1);
+-		gpio_msk(GPIO_MSK_OUT, GPIO_PORT_A, 5, 1);
+-		gpio_msk(GPIO_MSK_OE, GPIO_PORT_A, 5, 1);
+-		wr32(fan_pinmux + PINMUX_USB_VBUS_EN0, PM_LPDR | 1);
+-		gpio_msk(GPIO_MSK_CNF, GPIO_PORT_CC, 4, 1);
+-		gpio_msk(GPIO_MSK_OUT, GPIO_PORT_CC, 4, 0);
+-		gpio_msk(GPIO_MSK_OE, GPIO_PORT_CC, 4, 1);
+-		wr32(fan_pmc + PMC_NO_IOPOWER, rd32(fan_pmc + PMC_NO_IOPOWER) & ~PMC_GPIO_BIT);
+-		(void)rd32(fan_pmc + PMC_NO_IOPOWER);
+-		wr32(fan_pmc + PMC_PWR_DET_VAL, rd32(fan_pmc + PMC_PWR_DET_VAL) & ~PMC_GPIO_BIT);
+-		(void)rd32(fan_pmc + PMC_PWR_DET_VAL);
+-	} else {
+-		gpio_msk(GPIO_MSK_OUT, GPIO_PORT_A, 5, 0);
+-		gpio_msk(GPIO_MSK_OUT, GPIO_PORT_CC, 4, 0);
++	lck_mtx_lock(&reg5v_lock);
++	if (reg5v_pinmux == 0) {
++		reg5v_pinmux = ml_io_map(PINMUX_PA, 0x1000);
++	}
++	if (reg5v_pmc == 0) {
++		reg5v_pmc = ml_io_map(PMC_PA, 0x1000);
++	}
++	uint32_t was = reg5v_users;
++	reg5v_users = on ? (was | user) : (was & ~user);
++	if (reg5v_pinmux != 0 && reg5v_pmc != 0 && gpio_base != 0) {
++		if (was == 0 && reg5v_users != 0) {
++			wr32(reg5v_pinmux + PINMUX_SATA_LED_ACTIVE, 1);
++			gpio_msk(GPIO_MSK_CNF, GPIO_PORT_A, 5, 1);
++			gpio_msk(GPIO_MSK_OUT, GPIO_PORT_A, 5, 1);
++			gpio_msk(GPIO_MSK_OE, GPIO_PORT_A, 5, 1);
++			wr32(reg5v_pinmux + PINMUX_USB_VBUS_EN0, PM_LPDR | 1);
++			gpio_msk(GPIO_MSK_CNF, GPIO_PORT_CC, 4, 1);
++			gpio_msk(GPIO_MSK_OUT, GPIO_PORT_CC, 4, 0);
++			gpio_msk(GPIO_MSK_OE, GPIO_PORT_CC, 4, 1);
++			wr32(reg5v_pmc + PMC_NO_IOPOWER, rd32(reg5v_pmc + PMC_NO_IOPOWER) & ~PMC_GPIO_BIT);
++			(void)rd32(reg5v_pmc + PMC_NO_IOPOWER);
++			wr32(reg5v_pmc + PMC_PWR_DET_VAL, rd32(reg5v_pmc + PMC_PWR_DET_VAL) & ~PMC_GPIO_BIT);
++			(void)rd32(reg5v_pmc + PMC_PWR_DET_VAL);
++		} else if (was != 0 && reg5v_users == 0) {
++			gpio_msk(GPIO_MSK_OUT, GPIO_PORT_A, 5, 0);
++			gpio_msk(GPIO_MSK_OUT, GPIO_PORT_CC, 4, 0);
++		}
+ 	}
+-	fan_5v_on = on;
++	lck_mtx_unlock(&reg5v_lock);
+ }
+ 
+ static void
+@@ -1207,10 +1227,10 @@ fan_duty(uint32_t duty)
+ 	}
+ 	if (duty == 0) {
+ 		wr32(fan_pwm + PWM_CSR_1, PWM_CSR_EN | (0x100u << 16));
+-		fan_5v(false);
++		reg5v_set(REG5V_FAN, false);
+ 		wr32(fan_pinmux + PINMUX_LCD_GPIO2, PM_INPUT_ENABLE | PM_PARKED | PM_TRISTATE | PM_PULL_DOWN);
+ 	} else {
+-		fan_5v(true);
++		reg5v_set(REG5V_FAN, true);
+ 		wr32(fan_pwm + PWM_CSR_1, PWM_CSR_EN | ((FAN_MAX - duty) << 16));
+ 		wr32(fan_pinmux + PINMUX_LCD_GPIO2, 1);
+ 	}
+@@ -1356,7 +1376,6 @@ nx_fan_start(void)
+ 	wr32(fan_pwm + PWM_CSR_1, PWM_CSR_EN | (0x100u << 16));
+ 	wr32(fan_pinmux + PINMUX_LCD_GPIO2, 1);
+ 	gpio_msk(GPIO_MSK_CNF, GPIO_PORT_V, 4, 0);
+-	fan_5v_on = false;
+ 	if (kernel_thread_start(fan_thread, NULL, &thread) == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
+ 		fan_running = true;
+@@ -1407,6 +1426,8 @@ jc_gpio_str(uint32_t port, uint32_t pin, char out[5])
+ 	out[4] = '\0';
+ }
+ 
++static void nx_jc_thread(void *arg, wait_result_t wr);
++
+ static void
+ nx_jc_report(void)
+ {
+@@ -1464,6 +1485,222 @@ nx_jc_report(void)
+ 	delay(20);
+ 	printf("NX JC: rail detect: left %s (E6 %u), right %s (H6 %u)\n",
+ 	    e ? "not attached" : "attached", e, h ? "not attached" : "attached", h);
++	thread_t thread;
++	if (kernel_thread_start(nx_jc_thread, NULL, &thread) == KERN_SUCCESS) {
++		thread_deallocate(thread);
++	}
++}
++
++/*
++ * Joy-Con bring-up over the rail UARTs (boot-arg nxjc=1), as hekate's
++ * bdk/input/joycon.c _jc_conn_init and soc/uart.c, Erista only:
++ *  - power: shared 5 V regulator + charge enable (left GPIO CC3, right
++ *    GPIO K3, high; hekate already set their pinmux and output mode),
++ *  - UART clock: CAR reset + enable (UART-B: L bit 7 via RST_DEV_L_SET
++ *    0x300 / CLK_ENB_L_SET 0x320; UART-C: H bit 23 via 0x308 / 0x328,
++ *    clear registers at +4), source 0x17C / 0x1A0 = PLLP | DIV_EN (bit 24)
++ *    | 49 (408 MHz / 25.5 = 16 MHz = 16 x 1 Mbaud), divisor latch 1,
++ *  - UART (16550-style at 0x70006000 + 0x40 for B, + 0x200 for C): 8n1,
++ *    FIFO on and cleared, MCR RTS (manual RTS: RTS is dropped while
++ *    reading), IRDA_CSR (0x20) TXD and RTS inverted for the Joy-Con,
++ *  - wake A1 A2 A3 A4, handshake 19 01 03 07 00 A5 02 01 7E 00 00 00 (reply
++ *    cmd 0xA5), up to 10 tries 4 ms apart; then get-info 19 01 03 07 00 91
++ *    01 00 00 00 00 24, reply cmd 0x94 subcmd 0x01 status 0: payload[0] =
++ *    type (1 left, 2 right, 0x2x Hori), payload[1..6] = MAC (reversed).
++ * Replies start with 19 81 03; header 12 bytes (cmd @5, subcmd @6, status
++ * @9, payload @12). The UARTs stay at 1 Mbaud; the 3 Mbaud switch and HID
++ * input reports come next.
++ */
++#define UART_PA                 0x70006000u
++#define CAR_RST_DEV_L_SET       0x300u
++#define CAR_RST_DEV_H_SET       0x308u
++#define CAR_CLK_ENB_L_SET       0x320u
++#define CAR_CLK_ENB_H_SET       0x328u
++#define CAR_CLK_SOURCE_UARTB    0x17Cu
++#define CAR_CLK_SOURCE_UARTC    0x1A0u
++#define UART_SRC_1MBAUD         ((1u << 24) | 49u)
++#define U_THR                   0x00u
++#define U_IER                   0x04u
++#define U_FCR                   0x08u
++#define U_LCR                   0x0Cu
++#define U_MCR                   0x10u
++#define U_LSR                   0x14u
++#define U_SPR                   0x1Cu
++#define U_IRDA_CSR              0x20u
++#define  U_LSR_RDR              (1u << 0)
++#define  U_LSR_THRE             (1u << 5)
++#define  U_LSR_TMTY             (1u << 6)
++#define  U_MCR_RTS              (1u << 1)
++
++struct nx_jc {
++	const char *name;
++	uint32_t uart_off, rst_set, enb_set, bit, src, charge_port, charge_pin, gpio_port, gpio_pin, reg5v;
++	vm_offset_t u;
++	uint8_t buf[64];
++};
++static struct nx_jc nx_jc_dev[2] = {
++	{ "left", 0x200, CAR_RST_DEV_H_SET, CAR_CLK_ENB_H_SET, CAR_H_UARTC, CAR_CLK_SOURCE_UARTC,
++	  GPIO_PORT_CC, 3, GPIO_PORT_E, 6, REG5V_JC_L, 0, { 0 } },
++	{ "right", 0x40, CAR_RST_DEV_L_SET, CAR_CLK_ENB_L_SET, CAR_L_UARTB, CAR_CLK_SOURCE_UARTB,
++	  GPIO_PORT_K, 3, GPIO_PORT_H, 6, REG5V_JC_R, 0, { 0 } },
++};
++
++static uint64_t
++jc_now_us(void)
++{
++	uint64_t ns;
++	absolutetime_to_nanoseconds(mach_absolute_time(), &ns);
++	return ns / 1000;
++}
++
++static void
++jc_uart_init(struct nx_jc *jc, vm_offset_t car)
++{
++	wr32(car + jc->rst_set, jc->bit);               /* reset */
++	wr32(car + jc->enb_set + 4, jc->bit);           /* clock off */
++	wr32(car + jc->src, UART_SRC_1MBAUD);           /* PLLP / 25.5 = 16 MHz */
++	wr32(car + jc->enb_set, jc->bit);               /* clock on */
++	delay(2);
++	wr32(car + jc->rst_set + 4, jc->bit);           /* out of reset */
++	(void)rd32(car + jc->rst_set);
++
++	vm_offset_t u = jc->u;
++	wr32(u + U_IER, 0);
++	wr32(u + U_LCR, 0x80u | 0x03u);                 /* DLAB, 8n1 */
++	wr32(u + U_THR, 1);                             /* divisor latch 1 */
++	wr32(u + U_IER, 0);
++	wr32(u + U_LCR, 0x03u);
++	(void)rd32(u + U_SPR);
++	wr32(u + U_FCR, 0x01u);                         /* FIFO on */
++	(void)rd32(u + U_SPR);
++	delay(20);
++	wr32(u + U_MCR, 0);
++	delay(96);
++	wr32(u + U_FCR, 0x01u | 0x02u | 0x04u);         /* clear RX and TX FIFOs */
++	wr32(u + U_MCR, U_MCR_RTS);                     /* manual RTS */
++	delay(3);
++	while (rd32(u + U_LSR) & U_LSR_RDR) {
++		(void)rd32(u + U_THR);
++	}
++	wr32(u + U_IRDA_CSR, rd32(u + U_IRDA_CSR) | (1u << 1) | (1u << 3)); /* invert TXD, RTS */
++	(void)rd32(u + U_SPR);
++}
++
++static void
++jc_send(struct nx_jc *jc, const uint8_t *b, uint32_t n)
++{
++	for (uint32_t i = 0; i < n; i++) {
++		uint64_t t0 = jc_now_us();
++		while (!(rd32(jc->u + U_LSR) & U_LSR_THRE)) {
++			if (jc_now_us() - t0 > 2000) {
++				return;
++			}
++		}
++		wr32(jc->u + U_THR, b[i]);
++	}
++	uint64_t t0 = jc_now_us();
++	while (!(rd32(jc->u + U_LSR) & U_LSR_TMTY) && jc_now_us() - t0 < 2000) {
++	}
++}
++
++/* Read until 250 us without a byte (hekate's uart_recv), RTS dropped meanwhile. */
++static uint32_t
++jc_recv(struct nx_jc *jc)
++{
++	uint32_t n = 0;
++	wr32(jc->u + U_MCR, rd32(jc->u + U_MCR) & ~U_MCR_RTS);
++	uint64_t last = jc_now_us();
++	while (n < sizeof(jc->buf)) {
++		if (rd32(jc->u + U_LSR) & U_LSR_RDR) {
++			jc->buf[n++] = (uint8_t)rd32(jc->u + U_THR);
++			last = jc_now_us();
++		} else if (jc_now_us() - last > 250) {
++			break;
++		}
++	}
++	wr32(jc->u + U_MCR, rd32(jc->u + U_MCR) | U_MCR_RTS);
++	return n;
++}
++
++static bool
++jc_reply(struct nx_jc *jc, uint32_t n, uint8_t cmd)
++{
++	return n >= 12 && jc->buf[0] == 0x19 && jc->buf[1] == 0x81 && jc->buf[2] == 0x03 && jc->buf[5] == cmd;
++}
++
++static void
++jc_bringup(struct nx_jc *jc, vm_offset_t car)
++{
++	static const uint8_t wake[] = { 0xA1, 0xA2, 0xA3, 0xA4 };
++	static const uint8_t hs[] = { 0x19, 0x01, 0x03, 0x07, 0x00, 0xA5, 0x02, 0x01, 0x7E, 0x00, 0x00, 0x00 };
++	static const uint8_t info[] = { 0x19, 0x01, 0x03, 0x07, 0x00, 0x91, 0x01, 0x00, 0x00, 0x00, 0x00, 0x24 };
++
++	reg5v_set(jc->reg5v, true);
++	gpio_msk(GPIO_MSK_OUT, jc->charge_port, jc->charge_pin, 1);
++	jc_uart_init(jc, car);
++
++	uint32_t n = 0, tries;
++	bool ok = false;
++	for (tries = 1; tries <= 10 && !ok; tries++) {
++		jc_send(jc, wake, sizeof(wake));
++		(void)jc_recv(jc);
++		jc_send(jc, hs, sizeof(hs));
++		delay(4000);
++		n = jc_recv(jc);
++		ok = jc_reply(jc, n, 0xA5);
++	}
++	if (!ok) {
++		printf("NX JC: %s: no handshake reply after 10 tries (last %u bytes, first %02x %02x %02x %02x %02x %02x)\n",
++		    jc->name, n, jc->buf[0], jc->buf[1], jc->buf[2], jc->buf[3], jc->buf[4], jc->buf[5]);
++		return;
++	}
++	printf("NX JC: %s: handshake ok (try %u)\n", jc->name, tries - 1);
++	jc_send(jc, info, sizeof(info));
++	delay(2000);
++	n = jc_recv(jc);
++	if (!jc_reply(jc, n, 0x94) || jc->buf[6] != 0x01 || jc->buf[9] != 0 || n < 19) {
++		printf("NX JC: %s: no info reply (%u bytes, cmd %#x subcmd %#x status %#x)\n",
++		    jc->name, n, n > 5 ? jc->buf[5] : 0, n > 6 ? jc->buf[6] : 0, n > 9 ? jc->buf[9] : 0);
++		return;
++	}
++	const uint8_t *pl = &jc->buf[12];
++	printf("NX JC: %s: type %#x (%s), MAC %02x:%02x:%02x:%02x:%02x:%02x\n", jc->name, pl[0],
++	    (pl[0] & 0x20) ? "Hori" : pl[0] == 1 ? "Joy-Con (L)" : pl[0] == 2 ? "Joy-Con (R)" : "unknown",
++	    pl[6], pl[5], pl[4], pl[3], pl[2], pl[1]);
++}
++
++static void
++nx_jc_thread(__unused void *arg, __unused wait_result_t wr)
++{
++	vm_offset_t car = ml_io_map(CAR_PA_BAT, 0x1000), uart = ml_io_map(UART_PA, 0x1000);
++	vm_offset_t pinmux = ml_io_map(PINMUX_PA, 0x1000);
++	if (!car || !uart || !pinmux) {
++		printf("NX JC: MMIO mapping failed\n");
++		return;
++	}
++	for (int i = 0; i < 2; i++) {
++		struct nx_jc *jc = &nx_jc_dev[i];
++		jc->u = uart + jc->uart_off;
++		/* Attach detect (as nx_jc_report), with the TX pins switched back to the UART. */
++		uint32_t pm = rd32(pinmux + (i ? PINMUX_UART2_TX : PINMUX_UART3_TX));
++		uint32_t tx_port = i ? GPIO_PORT_G : GPIO_PORT_D, tx_pin = i ? 0 : 1;
++		uint32_t cnf = gpio_bit(0x00, tx_port, tx_pin), oe = gpio_bit(0x10, tx_port, tx_pin);
++		wr32(pinmux + (i ? PINMUX_UART2_TX : PINMUX_UART3_TX), PM_INPUT_ENABLE);
++		gpio_msk(GPIO_MSK_OE, tx_port, tx_pin, 0);
++		gpio_msk(GPIO_MSK_CNF, tx_port, tx_pin, 1);
++		delay(20);
++		(void)gpio_bit(0x30, jc->gpio_port, jc->gpio_pin);
++		uint32_t det = gpio_bit(0x30, jc->gpio_port, jc->gpio_pin);
++		wr32(pinmux + (i ? PINMUX_UART2_TX : PINMUX_UART3_TX), pm);
++		gpio_msk(GPIO_MSK_CNF, tx_port, tx_pin, cnf);
++		gpio_msk(GPIO_MSK_OE, tx_port, tx_pin, oe);
++		delay(20);
++		if (det) {
++			printf("NX JC: %s: not attached, skipped\n", jc->name);
++			continue;
++		}
++		jc_bringup(jc, car);
++	}
+ }
+ 
+ /* Called once from IOFindBSDRoot (iokit/bsddev/IOKitBSDInit.cpp). */
+-- 
+2.55.0
+

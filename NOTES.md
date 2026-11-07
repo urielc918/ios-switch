@@ -15,10 +15,13 @@ XNU loader to shim-nx and `tools/mkadt-nx.py` (see "Session 3").
 
 ## Where things are
 
-- Repo: `/home/j/ios-switch` (git, branch `main`; fresh clone of
-  github.com/urielc918/ios-switch since 2026-11-06, the old
-  `/home/j/2tbstorage/ios-switch` copy is gone, so most of `work/` below is
-  gone too: re-fetch as needed).
+- Repo: `/home/j/2tbstorage/ios-switch` (git, branch `main`, remote
+  github.com/urielc918/ios-switch), bind-mounted at `/home/j/ios-switch`
+  (active). Session 4 onward (0974-0979) was done from a separate fresh
+  clone on another machine, so the `work/` items it names (`ci-4227...`
+  and later, `img-*`, `ioslog-*`, `bt-0973`, `hekate`, `switch-l4t-atf`)
+  are not in this repo's `work/`: re-fetch as needed (CI kernels:
+  `gh run download RUN -D work/ci-RUN`).
 - Commit 1 imports **MakrSas/ios-topaz** `e4772911e116` as the base. It is
   a fork of dipa-studio/ios-sweet `45263bee51df` with an ARMv8.0 and
   4 KiB-page kernel (patches 0081, 0140, 0142), which the A57 needs.
@@ -908,6 +911,33 @@ iOS space contiguous; never move/cross the emuMMC).
   CI run 42328495373: success, 226 applied; kernel `work/ci-42328495373/`.
   Test image `work/img-0979-test/bl33.bin` (ee7adf79..., 0977 main cmdline)
   for `switchroot/ios-test/` ("iOS NX (fan test)"); not on the card yet.
+  That image was on the other clone (no image artifacts on GitHub, only
+  xnu-kernel/xnu-buildtree). **Rebuilt here** (2026-11-06 ~18:30): kernel
+  `work/ci-42328495373/kernel.development.sweet` (SHA256SUMS OK),
+  `nx-sdcard.sh work/sdcard-0979 KERNEL --log` (cmdline identical to the
+  main image's, incl. nxtimeoff=847272720), then proven shim (first 0xe000
+  bytes of the card's main bf3f552d bl33.bin) + that payload ->
+  `work/img-0979-test/bl33.bin` (ab1e6d2e...; differs from ee7adf79 only by
+  the ADT random-seed). **On the card** in `switchroot/ios-test/`, entry
+  `ios-nx-test.ini` renamed "iOS NX (fan test)". It replaced the 0978 perf
+  test (d70ed0f4...), kept at `work/img-0978-test/bl33.bin`.
+- **0979 on hardware (2026-11-06 evening, log `logs/ioslog-11.bin/.txt`,
+  decoded with tools/sweet-log.py)**: **fan control works**. SoC 37.8 C at
+  start (duty 0), slowly up to 42.12 C -> `duty 0 -> 51/236`,
+  `NX FAN: tachometer 3000 rpm at duty 51/236` (fan spins, tach reads),
+  then SoC back to 40.6 C with duty held at 51 (hysteresis band 39-42 C,
+  as designed). Peak 42.1 C over ~10 min at 998 MHz idle-ish, so the
+  higher curve points (>= 47 C) and the 92 C cut-off are untested. No
+  sensor errors, no "not clocked". Ended with volume-up shutdown
+  (`NX POWER: shutdown requested -> restart to hekate`).
+  Battery: 11% (24% earlier today), `-256mA` later in the run with
+  external=1 charging=1 (chg 0x6c, PC USB port): it drains while running
+  from a PC port; charge with the official adapter.
+  Next: raising the CPU clock (MAX77621 rail + PLLX) is now unblocked.
+  - **0979 is the main image** (2026-11-06): `switchroot/ios/bl33.bin` =
+    ab1e6d2e... (`work/img-0979-test/`, main cmdline); previous main kept
+    as `bl33-0977.bin` (bf3f552d...). Fan test entry `ios-nx-test.ini` and
+    `switchroot/ios-test/` removed. (0978 was a test-only image, never main.)
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

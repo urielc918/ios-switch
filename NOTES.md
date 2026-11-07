@@ -988,6 +988,11 @@ iOS space contiguous; never move/cross the emuMMC).
   from Linux's tegra210 speedo + CVB tables (not fetched yet). Nothing is
   written. Base for local work: `work/bt-0979` (CI 42332218841 buildtree,
   git: base / pre0979 / 0979 fixed / 0980).
+  CI run 42334991426: success, 227 applied, same skipped-patch/tool error
+  lines as before; kernel `work/ci-42334991426/` (SHA256SUMS OK). Test image
+  `work/img-0980-test/bl33.bin` (9a5e2ad7..., proven shim + payload, main
+  cmdline + `nxperf=1`) on the card as "iOS NX (CPU report)"
+  (`switchroot/ios-test/`, `ios-nx-test.ini`); main stays the fixed 0979.
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

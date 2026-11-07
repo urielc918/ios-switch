@@ -1201,6 +1201,11 @@ iOS space contiguous; never move/cross the emuMMC).
   multiple of 4928, <= 16 entries. Device mapping, aligned 32-bit loads.
   One line per entry: rate, min mV, clock_src, CLK_SOURCE_EMC value,
   training flags, dvfs_ver.
+  CI run 42347147116: success, 231 applied, same error lines; kernel
+  `work/ci-42347147116/`. Test image `work/img-0984-test/bl33.bin` (main
+  cmdline + `nxperf=1 nxcpu=1224`) replaced the 0983 perf test in
+  `switchroot/ios-test/` (0983 image kept in `work/img-0983-test/`), entry
+  renamed "iOS NX (DRAM report)". Main unchanged.
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

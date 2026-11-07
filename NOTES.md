@@ -971,6 +971,23 @@ iOS space contiguous; never move/cross the emuMMC).
     = 1c53d51d... (`work/img-0979b-test/`, CI 42332218841); the first 0979
     kept as `bl33-0979a.bin` (ab1e6d2e...). Fan test entry and
     `switchroot/ios-test/` removed.
+- **0980-nx-cpu-report (written, syntax-checked, pushed for CI)**: read-only
+  groundwork for raising the CPU clock; with `nxperf=1`, after the 0978
+  lines, `NX CPU:` lines: GP_HIDREV (chip/major/minor); fuses (hekate
+  bdk/soc/fuse.h, FUSE 0x7000F800 + off) SKU_INFO 0x110, OPT_FT_REV 0x128,
+  OPT_CP_REV 0x190, CPU speedo 0/1/2 0x114/0x12C/0x130, CPU IDDQ 0x118 (x4
+  mA as Nyx), SoC speedo 0/1/2 0x134/0x138/0x13C, SoC IDDQ 0x140 (x4),
+  only if CAR CLK_OUT_ENB_H bit 7 (FUSE) is on, RST_DEVICES_H bit 7 clear
+  and MISC_CLK_ENB (0x48) bit 28 (fuse visibility) set (hekate's hw_init
+  `clock_enable_fuse`); MAX77621 CPU rail (I2C5 0x1B) regs 0x00-0x05: VOUT/
+  VOUT_DVS bit 7 enable, 6:0 -> 606.25 mV + n x 6.25 mV (hekate
+  max7762x.c), CONTROL1/2, CHIPID; MAX77620 SD0 (0x16, 600 mV + (n & 0x7F)
+  x 12.5 mV). Expected: VOUT ~950 mV (hekate bdk/soc/ccplex.c
+  `_ccplex_enable_power_t210` sets 950000 uV for its 998 MHz PLLX). The
+  speedo/process ids and per-clock voltages are to be derived on the PC
+  from Linux's tegra210 speedo + CVB tables (not fetched yet). Nothing is
+  written. Base for local work: `work/bt-0979` (CI 42332218841 buildtree,
+  git: base / pre0979 / 0979 fixed / 0980).
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

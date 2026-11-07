@@ -1,0 +1,120 @@
+From 90fad12430f3193fa6733e21ca101488e99e4337 Mon Sep 17 00:00:00 2001
+From: x <x@x>
+Date: Fri, 6 Nov 2026 19:39:08 -0800
+Subject: [PATCH] nx-0980: boot-arg nxperf=1 also logs the CPU/SoC speedo and
+ IDDQ fuses, chip revision, and the MAX77621 CPU rail and MAX77620 SD0
+ voltages (read-only)
+
+---
+ bsd/dev/nx_input.c | 88 ++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 88 insertions(+)
+
+diff --git a/bsd/dev/nx_input.c b/bsd/dev/nx_input.c
+index 06e26a9..cd2c005 100644
+--- a/bsd/dev/nx_input.c
++++ b/bsd/dev/nx_input.c
+@@ -717,6 +717,93 @@ nx_perf_report(void)
+ 	    nset ? 4ull * sz * 1000 / nset : 0, ncpy ? 4ull * half * 1000 / ncpy : 0);
+ }
+ 
++/*
++ * Boot-arg nxperf=1, part 2: what a CPU clock change will need, read-only.
++ *  - Fuses (FUSE 0x7000F800 + offset, as hekate's bdk/soc/fuse.h and Nyx's
++ *    hardware info page): SKU_INFO 0x110, CPU_SPEEDO_0/1/2 0x114/0x12C/0x130,
++ *    CPU_IDDQ 0x118 (x 4 = mA, as Nyx shows it), SOC_SPEEDO_0/1/2
++ *    0x134/0x138/0x13C, SOC_IDDQ 0x140 (x 4), OPT_FT_REV 0x128, OPT_CP_REV
++ *    0x190. Readable while CAR MISC_CLK_ENB (0x48) bit 28 (fuse visibility)
++ *    is set and the FUSE clock (CLK_OUT_ENB_H 0x14 bit 7) runs out of reset
++ *    (RST_DEVICES_H 0x8 bit 7); hekate's hw_init sets both. Checked first,
++ *    nothing is written.
++ *  - APB_MISC GP_HIDREV (0x70000804): chip id 15:8, major 7:4, minor 19:16.
++ *  - MAX77621 CPU rail at I2C5 0x1B: VOUT 0x00 and VOUT_DVS 0x01 (bit 7
++ *    enable, bits 6:0 n: 606.25 mV + n x 6.25 mV), CONTROL1/2 0x02/0x03,
++ *    CHIPID1/2 0x04/0x05. hekate's ccplex sets 950 mV for its 998 MHz PLLX.
++ *  - MAX77620 SD0 (SoC/core rail) at I2C5 0x3C reg 0x16: 600 mV +
++ *    (n & 0x7F) x 12.5 mV.
++ * The speedo/process ids and the voltage for each clock are worked out from
++ * these on the PC (Linux tegra210 speedo and CVB tables), not here.
++ */
++#define FUSE_PA                 0x7000F000u     /* page; the fuse registers are at +0x800 */
++#define FUSE_REG(off)           (0x800u + (off))
++#define APB_MISC_PA             0x70000000u
++#define APB_MISC_GP_HIDREV      0x804u
++#define CAR_RST_DEVICES_H       0x008u
++#define CAR_CLK_OUT_ENB_H       0x014u
++#define CAR_MISC_CLK_ENB        0x048u
++#define  CAR_H_FUSE             (1u << 7)
++#define  CAR_MISC_FUSE_VISIBLE  (1u << 28)
++#define CPU_PMIC_ADDR           0x1B
++
++static int
++i2c5_reg(uint8_t addr, uint8_t reg, uint8_t *val)
++{
++	*val = 0;
++	return nx_i2c_xfer(5, addr, &reg, 1, val, 1);
++}
++
++static void
++nx_cpu_report(void)
++{
++	vm_offset_t car = ml_io_map(CAR_PA_BAT, 0x1000);
++	vm_offset_t fuse = ml_io_map(FUSE_PA, 0x1000);
++	vm_offset_t misc = ml_io_map(APB_MISC_PA, 0x1000);
++	if (!car || !fuse || !misc) {
++		printf("NX CPU: MMIO mapping failed\n");
++		return;
++	}
++	uint32_t hid = rd32(misc + APB_MISC_GP_HIDREV);
++	printf("NX CPU: HIDREV %#x (chip %#x, major %u, minor %u)\n",
++	    hid, (hid >> 8) & 0xFFu, (hid >> 4) & 0xFu, (hid >> 16) & 0xFu);
++
++	uint32_t enb = rd32(car + CAR_CLK_OUT_ENB_H), rst = rd32(car + CAR_RST_DEVICES_H);
++	uint32_t mce = rd32(car + CAR_MISC_CLK_ENB);
++	if (!(enb & CAR_H_FUSE) || (rst & CAR_H_FUSE) || !(mce & CAR_MISC_FUSE_VISIBLE)) {
++		printf("NX CPU: fuses not readable (CAR enb_h %#x rst_h %#x misc_clk_enb %#x)\n", enb, rst, mce);
++	} else {
++#define F(off) rd32(fuse + FUSE_REG(off))
++		printf("NX CPU: fuse SKU_INFO %#x, FT_REV %#x, CP_REV %#x\n", F(0x110), F(0x128), F(0x190));
++		printf("NX CPU: fuse CPU speedo %u %u %u, IDDQ %u (x4 = %u mA)\n",
++		    F(0x114), F(0x12C), F(0x130), F(0x118), F(0x118) * 4);
++		printf("NX CPU: fuse SoC speedo %u %u %u, IDDQ %u (x4 = %u mA)\n",
++		    F(0x134), F(0x138), F(0x13C), F(0x140), F(0x140) * 4);
++#undef F
++	}
++
++	uint8_t r[6];
++	int error = 0;
++	for (uint8_t i = 0; i < 6 && !error; i++) {
++		error = i2c5_reg(CPU_PMIC_ADDR, i, &r[i]);
++	}
++	if (error) {
++		printf("NX CPU: MAX77621 (I2C5 %#x) read failed (err %d)\n", CPU_PMIC_ADDR, error);
++	} else {
++		printf("NX CPU: MAX77621 VOUT %#x = %u uV%s, VOUT_DVS %#x = %u uV%s, CONTROL1 %#x, CONTROL2 %#x, CHIPID %#x %#x\n",
++		    r[0], 606250u + (r[0] & 0x7Fu) * 6250u, (r[0] & 0x80u) ? " (on)" : " (off)",
++		    r[1], 606250u + (r[1] & 0x7Fu) * 6250u, (r[1] & 0x80u) ? " (on)" : " (off)",
++		    r[2], r[3], r[4], r[5]);
++	}
++	uint8_t sd0 = 0;
++	error = i2c5_reg(PMIC_ADDR, 0x16, &sd0);
++	if (error) {
++		printf("NX CPU: MAX77620 SD0 read failed (err %d)\n", error);
++	} else {
++		printf("NX CPU: MAX77620 SD0 (SoC rail) %#x = %u uV\n", sd0, 600000u + (sd0 & 0x7Fu) * 12500u);
++	}
++}
++
+ /*
+  * Fan and temperature (boot-arg nxfan=0 leaves both alone), as hekate's
+  * bdk/thermal/fan.c, tmp451.c and power/regulator_5v.c (Erista):
+@@ -976,6 +1063,7 @@ nx_input_start(void)
+ 	uint32_t perf = 0;
+ 	if (PE_parse_boot_argn("nxperf", &perf, sizeof(perf)) && perf == 1) {
+ 		nx_perf_report();
++		nx_cpu_report();
+ 	}
+ 	gpio_base = ml_io_map(GPIO_PA, 0x1000);
+ 	i2c_base = ml_io_map(I2C_PA, 0x2000);
+-- 
+2.55.0
+

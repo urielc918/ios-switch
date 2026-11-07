@@ -1,4 +1,4 @@
-From a88a9fc0909988fc59e1f5b2c1a86702ec015a62 Mon Sep 17 00:00:00 2001
+From 30c65d0febad2f6381e48cfc2fe524c7f7268554 Mon Sep 17 00:00:00 2001
 From: x <x@x>
 Date: Fri, 6 Nov 2026 20:02:59 -0800
 Subject: [PATCH] nx-0981: boot-arg nxcpu=1020|1122|1224 raises PLLX and the
@@ -7,11 +7,11 @@ Subject: [PATCH] nx-0981: boot-arg nxcpu=1020|1122|1224 raises PLLX and the
  restart/power-off
 
 ---
- bsd/dev/nx_input.c | 239 +++++++++++++++++++++++++++++++++++++++++----
- 1 file changed, 221 insertions(+), 18 deletions(-)
+ bsd/dev/nx_input.c | 263 +++++++++++++++++++++++++++++++++++++++++----
+ 1 file changed, 245 insertions(+), 18 deletions(-)
 
 diff --git a/bsd/dev/nx_input.c b/bsd/dev/nx_input.c
-index cd2c005..1d955d7 100644
+index cd2c005..1d76cb9 100644
 --- a/bsd/dev/nx_input.c
 +++ b/bsd/dev/nx_input.c
 @@ -33,6 +33,7 @@ int nx_battery_read(uint32_t v[8]);
@@ -90,7 +90,7 @@ index cd2c005..1d955d7 100644
  
  	/* Memory bandwidth: 32 MiB, memset then memcpy 16 -> 16 MiB, 4 rounds each. */
  	const size_t sz = 32u << 20, half = sz / 2;
-@@ -804,6 +815,196 @@ nx_cpu_report(void)
+@@ -804,6 +815,220 @@ nx_cpu_report(void)
  	}
  }
  
@@ -111,9 +111,12 @@ index cd2c005..1d955d7 100644
 + * 12-38.4 MHz): N 159/175/191 -> 1017.6/1120.0/1222.4 MHz.
 + * Sequence (as Linux clk-tegra-super-cclk.c + hekate clock_enable_pllx):
 + * voltage up (VOUT, then VOUT_DVS, as hekate; 1 ms for the 12.5 mV/us ramp,
-+ * read back), interrupts off, CCLK burst policy -> PLLP (source 4), PLLX
++ * read back), interrupts off, PLLP branch to the CPU on (CLK_OUT_ENB_Y
++ * bit 31; 0981's first build lacked this and froze), CCLK burst policy ->
++ * PLLP (source 4), PLLX
 + * disable, new M/N/P, bypass/lock-enable/enable, wait for LOCK (bit 27, up
-+ * to 1 ms), CCLK back to PLLX_OUT0_LJ (8). Lock timeout: back to hekate's
++ * to 1 ms), CCLK back to PLLX_OUT0_LJ (8), PLLP branch off. Lock timeout:
++ * back to hekate's
 + * PLLX setting and voltage. Before a restart/shutdown (nx_halt_restart)
 + * the CPU goes back to PLLP and 950 mV.
 + */
@@ -123,6 +126,8 @@ index cd2c005..1d955d7 100644
 +#define  PLL_BASE_ENABLE        (1u << 30)
 +#define  PLL_BASE_LOCK          (1u << 27)
 +#define CCLK_BURST_PLLP         0x20004444u
++#define CAR_CLK_OUT_ENB_Y       0x298u
++#define  CAR_Y_PLLP_OUT_CPU     (1u << 31)      /* PLLP branch to the CPU (Linux clk-super.c) */
 +#define CCLK_BURST_PLLX         0x20008888u
 +#define MAX77621_N(reg)         ((reg) & 0x7Fu)
 +#define MAX77621_UV(n)          (606250u + (n) * 6250u)
@@ -165,13 +170,32 @@ index cd2c005..1d955d7 100644
 +	return error;
 +}
 +
++/*
++ * CCLK source, as Linux clk-super.c clk_super_set_parent on T210: the PLLP
++ * branch to the CPU (CLK_OUT_ENB_Y bit 31) must be on before PLLP is selected
++ * (otherwise the CPU clock stops), and is turned off again once it isn't used.
++ */
++static void
++cpu_cclk_select(uint32_t burst)
++{
++	if (burst == CCLK_BURST_PLLP) {
++		wr32(cpu_car + CAR_CLK_OUT_ENB_Y, rd32(cpu_car + CAR_CLK_OUT_ENB_Y) | CAR_Y_PLLP_OUT_CPU);
++		(void)rd32(cpu_car + CAR_CLK_OUT_ENB_Y);
++	}
++	wr32(cpu_car + CAR_CCLK_BURST, burst);
++	(void)rd32(cpu_car + CAR_CCLK_BURST);
++	delay(2);
++	if (burst != CCLK_BURST_PLLP) {
++		wr32(cpu_car + CAR_CLK_OUT_ENB_Y, rd32(cpu_car + CAR_CLK_OUT_ENB_Y) & ~CAR_Y_PLLP_OUT_CPU);
++		(void)rd32(cpu_car + CAR_CLK_OUT_ENB_Y);
++	}
++}
++
 +/* Interrupts off; returns true once PLLX is locked with the new setting. */
 +static bool
 +cpu_pllx_program(uint32_t base)
 +{
-+	wr32(cpu_car + CAR_CCLK_BURST, CCLK_BURST_PLLP);
-+	(void)rd32(cpu_car + CAR_CCLK_BURST);
-+	delay(2);
++	cpu_cclk_select(CCLK_BURST_PLLP);
 +	wr32(cpu_car + CAR_PLLX_BASE, rd32(cpu_car + CAR_PLLX_BASE) & ~PLL_BASE_ENABLE);
 +	delay(2);
 +	wr32(cpu_car + CAR_PLLX_BASE, PLL_BASE_BYPASS | base);
@@ -181,8 +205,7 @@ index cd2c005..1d955d7 100644
 +	for (int i = 0; i < 1000; i++) {
 +		if (rd32(cpu_car + CAR_PLLX_BASE) & PLL_BASE_LOCK) {
 +			delay(50);              /* Linux PLL_POST_LOCK_DELAY */
-+			wr32(cpu_car + CAR_CCLK_BURST, CCLK_BURST_PLLX);
-+			(void)rd32(cpu_car + CAR_CCLK_BURST);
++			cpu_cclk_select(CCLK_BURST_PLLX);
 +			return true;
 +		}
 +		delay(1);
@@ -243,6 +266,8 @@ index cd2c005..1d955d7 100644
 +		(void)cpu_vout_set(vout, dvs);
 +		return;
 +	}
++	printf("NX CPU: rail at %u uV, moving the CPU to PLLP (CLK_OUT_ENB_Y %#x) to reprogram PLLX\n",
++	    MAX77621_UV(nx_cpu_steps[s].vn), rd32(cpu_car + CAR_CLK_OUT_ENB_Y));
 +	cpu_pllx_saved = pllx & ~(PLL_BASE_ENABLE | PLL_BASE_LOCK | PLL_BASE_BYPASS);
 +	cpu_vout_saved = vout;
 +	cpu_dvs_saved = dvs;
@@ -277,8 +302,7 @@ index cd2c005..1d955d7 100644
 +	}
 +	cpu_raised = false;
 +	boolean_t istate = ml_set_interrupts_enabled(FALSE);
-+	wr32(cpu_car + CAR_CCLK_BURST, CCLK_BURST_PLLP);
-+	(void)rd32(cpu_car + CAR_CCLK_BURST);
++	cpu_cclk_select(CCLK_BURST_PLLP);
 +	ml_set_interrupts_enabled(istate);
 +	int error = cpu_vout_set(cpu_vout_saved, cpu_dvs_saved);
 +	printf("NX CPU: CPU on PLLP, rail back to %u uV (err %d)\n", MAX77621_UV(MAX77621_N(cpu_vout_saved)), error);
@@ -287,7 +311,7 @@ index cd2c005..1d955d7 100644
  /*
   * Fan and temperature (boot-arg nxfan=0 leaves both alone), as hekate's
   * bdk/thermal/fan.c, tmp451.c and power/regulator_5v.c (Erista):
-@@ -1045,6 +1246,7 @@ nx_fan_start(void)
+@@ -1045,6 +1270,7 @@ nx_fan_start(void)
  	fan_5v_on = false;
  	if (kernel_thread_start(fan_thread, NULL, &thread) == KERN_SUCCESS) {
  		thread_deallocate(thread);
@@ -295,7 +319,7 @@ index cd2c005..1d955d7 100644
  	}
  }
  
-@@ -1072,6 +1274,7 @@ nx_input_start(void)
+@@ -1072,6 +1298,7 @@ nx_input_start(void)
  		return;
  	}
  	nx_fan_start();

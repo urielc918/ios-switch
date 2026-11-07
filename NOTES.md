@@ -1066,6 +1066,23 @@ iOS space contiguous; never move/cross the emuMMC).
   renamed "iOS NX (CPU 1224 MHz test)". Main stays the fixed 0979.
   nxperf's 0978 lines run before the raise (they show 998 MHz); the raise
   logs its own measured kHz.
+- **0981 first hardware test: froze.** Screen (kernel console) stopped right
+  after the 0980 lines (`NX CPU: MAX77621 VOUT 0xb7 ...`, `... SD0 ...`);
+  nx_cpu_raise prints nothing until done, so it hung inside it; the SD log
+  never got its first flush (no new log). Cause (found in Linux
+  drivers/clk/tegra/clk-super.c `clk_super_set_parent`): on T210 the
+  **PLLP branch to the CPU, CAR CLK_OUT_ENB_Y (0x298) bit 31
+  (CLK_ENB_PLLP_OUT_CPU, drivers/clk/tegra/clk.c; hekate
+  CLK_Y_PLLP_OUT_CPU "only enable")**, must be on before CCLK selects PLLP;
+  hekate never sets it (CPU always on PLLX), so moving CCLK to PLLP stopped
+  the whole cluster's clock. **Fix (0981 replaced in place)**:
+  `cpu_cclk_select()`: set Y bit 31 before selecting PLLP, clear it after
+  selecting PLLX again (Linux order); used for the PLLX reprogram and for
+  nx_cpu_restore. New line before the switch: `NX CPU: rail at N uV,
+  moving the CPU to PLLP (CLK_OUT_ENB_Y ...)`, so a further hang shows
+  whether the rail step worked. Note: CAR 0x020 (CCLK_BURST_POLICY, hekate)
+  vs Linux's 0x368 (CCLKG_BURST_POLICY): kept 0x020, which hekate uses to
+  put the G cluster on PLLX.
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

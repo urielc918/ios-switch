@@ -1088,6 +1088,24 @@ iOS space contiguous; never move/cross the emuMMC).
   (58dada52..., same cmdline as the first: nxperf=1 nxcpu=1224) replaced
   the frozen first 0981 build (8a2a9067) in `switchroot/ios-test/`, entry
   "iOS NX (CPU 1224 MHz test)". Main stays the fixed 0979.
+- **iOS shows 16 GB (2026-11-06)**: the root HFS+ was built as the 16 GiB
+  image and dd'd into the 132 GiB `ios` partition (sdc3); the filesystem was
+  never grown. Linux hfsprogs can't grow HFS+; the kernel's HFS
+  (bsd/sweet_hfs, hfs_vfsops.c `hfs_extendfs`, HFSIOC_RESIZE_VOLUME) can,
+  online. Plan: patch 0982, one-shot grow of the mounted root behind a
+  boot-arg.
+  - **Backup** (user, sudo dd of the first 16 GiB of sdc3):
+    `research/sd-backup/iosroot-16g.img`, 17179869184 bytes, SHA-256
+    c16c4b3d1ac9f5e472c3d742c3bb7e02686764cc8ef773e9a623652b56f6999f.
+    Volume header: HX v5 (case-sensitive HFSX), journaled, cleanly
+    unmounted, block 4096 x 4194304 = 16.00 GiB, 12.48 GiB used, 3.52 GiB
+    free; alternate header at the end matches.
+  - `fsck.hfsplus -n -d`: "Incorrect number of file hard links" (fileinode
+    315870, first link ID 0) + "Volume header needs minor repair". The
+    original PC image only has the header one (the known quirk), so the
+    hard-link error came from use on the Switch (a hard power-off/freeze or
+    XNU's HFS). To repair before resizing (user, sudo):
+    `fsck.hfsplus -fy /dev/sdc3`.
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

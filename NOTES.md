@@ -993,6 +993,23 @@ iOS space contiguous; never move/cross the emuMMC).
   `work/img-0980-test/bl33.bin` (9a5e2ad7..., proven shim + payload, main
   cmdline + `nxperf=1`) on the card as "iOS NX (CPU report)"
   (`switchroot/ios-test/`, `ios-nx-test.ini`); main stays the fixed 0979.
+- **0980 on hardware (log `logs/ioslog-14.bin/.txt`)**: all reads worked
+  (fuses visible, I2C5 OK). 0978 lines unchanged (PLLX 998.4 MHz, EMC
+  800 MHz, memset 2323 / memcpy 1455 MB/s).
+  - `HIDREV 0x22117`: chip 0x21 (T210), major 1, minor 2 -> **T210 A02**.
+  - `SKU_INFO 0x83`, `FT_REV 0xa0` (5.0), `CP_REV 0x100` (8.0).
+  - **CPU speedo 1993 / 3461 / 1979** (fuses 0x114/0x12C/0x130), **CPU IDDQ
+    429 -> 1716 mA**. SoC speedo 1878 / 127 / 0, SoC IDDQ 449 -> 1796 mA.
+    SoC speedo 1 = 127 = Nyx's "BROM rev" (>= 0x7F -> ODNX02-A2).
+  - **MAX77621 VOUT 0xb7 = 950000 uV, enabled; VOUT_DVS the same**
+    (hekate's 950 mV, as expected). CONTROL1 0xb0 = SNS | NFSR | AD, ramp
+    0 = 12.5 mV/us (hekate's HOS config); CONTROL2 0xc1 = T_JUNCTION_120 |
+    WDTMR | inductor nominal, CKKADV trip 75 mV/us. CHIPID 0x12 0x00.
+  - **MAX77620 SD0 0x2a = 1125000 uV** (SoC rail).
+  Next: fetch Linux's tegra210 speedo (drivers/soc/tegra/fuse/
+  speedo-tegra210.c) and CPU CVB tables (drivers/clk/tegra/
+  clk-tegra124-dfll-fcpu.c) and work out speedo/process id and the
+  voltage per PLLX frequency for these values, then 0981.
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

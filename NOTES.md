@@ -957,7 +957,16 @@ iOS space contiguous; never move/cross the emuMMC).
   42328495373; kernel `work/ci-42332218841/` (SHA256SUMS OK). Test image
   `work/img-0979b-test/bl33.bin` (1c53d51d..., proven shim + payload, main
   cmdline) on the card as "iOS NX (fan test)" (`switchroot/ios-test/`,
-  `ios-nx-test.ini`); main stays 0979 (ab1e6d2e...). Not yet booted.
+  `ios-nx-test.ini`); main stays 0979 (ab1e6d2e...).
+- **0979 fix, first boot (log `logs/ioslog-13.bin/.txt`, "iOS NX (fan test)")**:
+  duty 0 -> 51 at 42.00 C, tachometer 3330 rpm, then SoC 39.87-41.18 C at
+  duty 51 (never <= 39.00, so it stayed on) until a volume-up shutdown. No
+  sensor errors. Same as logs 11/12: the old and new curves only differ
+  above 44 C, which an idle 998 MHz run doesn't reach, so the new steps are
+  still untested. The log can't show which kernel ran (same "Darwin Kernel
+  Version" string in both builds, no UUID printed); a one-time
+  `NX FAN: curve ...` line would make the next fan change identifiable.
+  Battery 8% -> 7%, -425 mA on the PC port: charge before the next session.
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

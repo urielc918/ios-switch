@@ -1105,7 +1105,24 @@ iOS space contiguous; never move/cross the emuMMC).
     original PC image only has the header one (the known quirk), so the
     hard-link error came from use on the Switch (a hard power-off/freeze or
     XNU's HFS). To repair before resizing (user, sudo):
-    `fsck.hfsplus -fy /dev/sdc3`.
+    `fsck.hfsplus -fy /dev/sdc3`. **Done by the user (2026-11-06), before 0982.**
+- **0982-nx-root-grow (written, syntax-checked, pushed for CI)**: boot-arg
+  `sdgrow=1` (bsd/dev/nx_sdmmc.c). Only for the partition named `ios` with
+  sdrw=1; a kernel thread polls once a second (up to 300 s) for the root
+  vnode, checks "/" is `hfs` and its device vnode is sdroot0
+  (vfs_devvp + vnode_specrdev == sd.bdev), waits for a read-write mount,
+  reads f_bsize/f_blocks (vfs_getattr), and calls
+  `VNOP_IOCTL(rootvnode, HFSIOC_RESIZE_VOLUME (_IOW('h', 2, u_int64_t)),
+  partition bytes rounded down to the block size)` with
+  vfs_context_kernel(): hfs_readwrite.c -> hfs_extendfs (hfs_resize.c),
+  Apple's online grow (needs root/owner, vroot, not read-only; checks
+  DKIOCGETBLOCKCOUNT = sd.nblocks, the GPT length). Partition `ios`
+  = 278888448 sectors = 142790885376 bytes = 34861056 x 4 KiB (exact).
+  Logs `NX SD: grow: HFS volume A MiB -> B MiB ...` and `resize returned N;
+  volume now ... MiB, ... MiB free`; with the volume already full it logs
+  "already fills the partition" (HFS would also return 0). Local check:
+  xnu-cc.py, same -Werror= set as 0981 (the one -Wshadow hit, `total` in
+  log_flush, is pre-existing): 0 errors.
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

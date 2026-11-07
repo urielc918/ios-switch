@@ -1,0 +1,141 @@
+From 2afb6e0de2d569b7c11734c0b6a407f604eab173 Mon Sep 17 00:00:00 2001
+From: x <x@x>
+Date: Fri, 6 Nov 2026 21:12:28 -0800
+Subject: [PATCH] nx-0982: boot-arg sdgrow=1 grows the root HFS+ volume to the
+ whole "ios" partition once it is mounted read-write (HFSIOC_RESIZE_VOLUME ->
+ hfs_extendfs, online)
+
+---
+ bsd/dev/nx_sdmmc.c | 95 ++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 95 insertions(+)
+
+diff --git a/bsd/dev/nx_sdmmc.c b/bsd/dev/nx_sdmmc.c
+index 6366b5d..a54c1af 100644
+--- a/bsd/dev/nx_sdmmc.c
++++ b/bsd/dev/nx_sdmmc.c
+@@ -54,6 +54,9 @@ void nx_sdmmc_log_final(void);
+ #include <pexpert/pexpert.h>
+ #include <pexpert/device_tree.h>
+ #include <libkern/libkern.h>
++#include <sys/vnode.h>
++#include <sys/mount.h>
++#include <sys/ioccom.h>
+ 
+ /* osfmk/arm/machine_routines.h, not exported to the BSD layer */
+ extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
+@@ -1104,6 +1107,8 @@ sd_bench(void)
+ 	    done / 2, t / 1000, t ? done * SECTOR * 1000 / t : 0, sd.mhz10 / 10, sd.mhz10 % 10, error);
+ }
+ 
++static void sd_grow_thread(void *arg, wait_result_t wr);
++
+ static int
+ nx_sdmmc_init(void)
+ {
+@@ -1138,6 +1143,15 @@ nx_sdmmc_init(void)
+ 	sd.ready = true;
+ 	printf("NX SD: \"%s\": first block 0x%llx, %llu MiB, %s\n", want, sd.first_block,
+ 	    sd.nblocks >> 11, sd.writable ? "read-write" : "read-only");
++	uint32_t grow = 0;
++	if (PE_parse_boot_argn("sdgrow", &grow, sizeof(grow)) && grow == 1) {
++		thread_t thread;
++		if (strcmp(want, "ios") != 0 || !sd.writable) {
++			printf("NX SD: grow: only for the \"ios\" partition with sdrw=1; left alone\n");
++		} else if (kernel_thread_start(sd_grow_thread, NULL, &thread) == KERN_SUCCESS) {
++			thread_deallocate(thread);
++		}
++	}
+ 	return 0;
+ }
+ 
+@@ -1362,6 +1376,87 @@ nx_sdmmc_log_start(void)
+ 	}
+ }
+ 
++/*
++ * Boot-arg sdgrow=1: grow the root HFS+ volume to the whole root partition,
++ * once it is mounted read-write. The iOS root was built as a 16 GiB image
++ * and dd'd into the larger "ios" partition. Uses HFS's own online resize:
++ * HFSIOC_RESIZE_VOLUME on the root vnode -> hfs_extendfs
++ * (bsd/sweet_hfs/core/hfs_readwrite.c, hfs_resize.c), the path diskutil
++ * resizeVolume takes. hfs_extendfs checks the new size against this
++ * driver's DKIOCGETBLOCKCOUNT (= the GPT partition's length), and every
++ * I/O is bounds-checked against the partition in strategy, so nothing
++ * outside it can be written. Only for the partition named "ios", writable
++ * (sdrw=1), and only if "/" is HFS mounted from sdroot0. Once the volume
++ * fills the partition HFS returns 0 for the equal size (a no-op).
++ */
++#define HFSIOC_RESIZE_VOLUME_NX _IOW('h', 2, u_int64_t) /* bsd/sweet_hfs/core/hfs_fsctl.h */
++static int sd_grow_chan;
++
++static void
++sd_grow_thread(__unused void *arg, __unused wait_result_t wr)
++{
++	vfs_context_t ctx = vfs_context_kernel();
++	for (int i = 0; i < 300; i++) {
++		uint64_t deadline;
++		clock_interval_to_deadline(1000, NSEC_PER_MSEC, &deadline);
++		(void)assert_wait_deadline(&sd_grow_chan, THREAD_UNINT, deadline);
++		(void)thread_block(THREAD_CONTINUE_NULL);
++
++		vnode_t vp = vfs_rootvnode();
++		if (vp == NULLVP) {
++			continue;
++		}
++		mount_t mp = vnode_mount(vp);
++		vnode_t devvp = vfs_devvp(mp);
++		bool ours = devvp != NULLVP && vnode_specrdev(devvp) == sd.bdev;
++		if (devvp != NULLVP) {
++			vnode_put(devvp);
++		}
++		struct vfsstatfs *st = vfs_statfs(mp);
++		if (!ours || strncmp(st->f_fstypename, "hfs", MFSTYPENAMELEN) != 0) {
++			printf("NX SD: grow: / is %s, not HFS on sdroot0; left alone\n", st->f_fstypename);
++			vnode_put(vp);
++			return;
++		}
++		if (vfs_isrdonly(mp)) {
++			vnode_put(vp);
++			continue;                       /* wait for the read-write mount */
++		}
++		struct vfs_attr va;
++		VFSATTR_INIT(&va);
++		VFSATTR_WANTED(&va, f_bsize);
++		VFSATTR_WANTED(&va, f_blocks);
++		int error = vfs_getattr(mp, &va, ctx);
++		if (error || !VFSATTR_IS_SUPPORTED(&va, f_bsize) || !VFSATTR_IS_SUPPORTED(&va, f_blocks) ||
++		    va.f_bsize == 0) {
++			printf("NX SD: grow: no volume size (err %d); left alone\n", error);
++			vnode_put(vp);
++			return;
++		}
++		uint64_t cur = va.f_blocks * va.f_bsize;
++		uint64_t want = sd.nblocks * SECTOR / va.f_bsize * va.f_bsize;
++		if (want <= cur) {
++			printf("NX SD: grow: volume %llu MiB already fills the partition (%llu MiB)\n",
++			    cur >> 20, (sd.nblocks * SECTOR) >> 20);
++			vnode_put(vp);
++			return;
++		}
++		printf("NX SD: grow: HFS volume %llu MiB -> %llu MiB (partition %llu blocks of %u)\n",
++		    cur >> 20, want >> 20, sd.nblocks, SECTOR);
++		error = VNOP_IOCTL(vp, HFSIOC_RESIZE_VOLUME_NX, (caddr_t)&want, 0, ctx);
++		VFSATTR_INIT(&va);
++		VFSATTR_WANTED(&va, f_bsize);
++		VFSATTR_WANTED(&va, f_blocks);
++		VFSATTR_WANTED(&va, f_bfree);
++		int aerr = vfs_getattr(mp, &va, ctx);
++		printf("NX SD: grow: resize returned %d; volume now %llu MiB, %llu MiB free (getattr err %d)\n",
++		    error, aerr ? 0 : (va.f_blocks * va.f_bsize) >> 20, aerr ? 0 : (va.f_bfree * va.f_bsize) >> 20, aerr);
++		vnode_put(vp);
++		return;
++	}
++	printf("NX SD: grow: / not mounted read-write after 300 s; left alone\n");
++}
++
+ /* Root device for rd=sdroot0 (IOFindBSDRoot). */
+ int
+ nx_sdmmc_rootdev(dev_t *dev)
+-- 
+2.55.0
+

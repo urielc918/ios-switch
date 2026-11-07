@@ -1123,6 +1123,12 @@ iOS space contiguous; never move/cross the emuMMC).
   "already fills the partition" (HFS would also return 0). Local check:
   xnu-cc.py, same -Werror= set as 0981 (the one -Wshadow hit, `total` in
   log_flush, is pre-existing): 0 errors.
+  CI run 42341749046: success, 229 applied, same error lines; kernel
+  `work/ci-42341749046/`. Test image `work/img-0982-grow/bl33.bin`
+  (381bb7c0..., main cmdline + `sdgrow=1`, no nxcpu) on the card as a
+  **second** test entry "iOS NX (grow root)" (`switchroot/ios-grow/`,
+  `bootloader/ini/ios-nx-grow.ini`); the CPU 1224 MHz test in
+  `switchroot/ios-test/` and the fixed-0979 main are unchanged.
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

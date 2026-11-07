@@ -1298,6 +1298,11 @@ iOS space contiguous; never move/cross the emuMMC).
     MAC ...`, or the failure with the first reply bytes. UARTs stay at
     1 Mbaud; no HID input yet (0987: 3 Mbaud switch, HID connect, input
     reports, iOS buttons). Charging stays enabled for attached rails.
+  CI run 42352917682: success, 233 applied, same error lines; kernel
+  `work/ci-42352917682/`. Test image `work/img-0986-test/bl33.bin` (main
+  cmdline + `nxjc=1`) replaced the 0985 report in `switchroot/ios-test/`
+  (0985 image kept in `work/img-0985-test/`), entry "iOS NX (Joy-Con UART
+  test)". Main unchanged.
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

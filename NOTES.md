@@ -1229,6 +1229,26 @@ iOS space contiguous; never move/cross the emuMMC).
     compensation, not a small patch like 0981.
   - Shutdown in this run: plain power off (`NX POWER: shutdown requested ->
     power off`), restore line OK.
+- **Joy-Con plan (2026-11-06; DRAM 1600 deferred)**: hekate bdk/input/
+  joycon.c (1536 lines) is the reference. Left = UART-C, right = UART-B
+  (0x70006000 block); attach detect on GPIO E6 (L) / H6 (R), shared with
+  the UART TX pins; charge enable L: pinmux SPDIF_IN + GPIO CC3, R: pinmux
+  GPIO_PK3 + GPIO K3; rail power from the shared 5 V regulator
+  (regulator_5v.c keeps a user bitmask: fan, JC L, JC R). Protocol: wired
+  UART packets (magic 19 01 03 / 19 81 03, handshake 0xA5, CMD 0x91 / HID
+  0x92, CRC8 poly 0x8D), then HID input reports 0x30. Erista only (Hoag's
+  Sio path not needed). serial=3 is the SWEET fbcon, no hardware UART is
+  used by XNU, so UART-B/C are free. Stages: 0985 report + detect; 0986
+  power + UART + handshake + device info (and a shared 5 V user count so
+  the fan can't cut rail power); 0987 buttons into iOS (Home etc.).
+- **0985-nx-joycon-report (written, syntax-checked, pushed for CI)**:
+  boot-arg `nxjc=1` (after nx_fan_start): `NX JC:` lines with the pinmux of
+  UART2/UART3 TX/RX/RTS/CTS, PE6/PH6/SPDIF_IN/PK3/SATA_LED_ACTIVE/
+  USB_VBUS_EN0, GPIO cnf/oe/out/in of G0 D1 H6 E6 CC3 K3 A5 CC4, CAR
+  UART-B (L bit 7) / UART-C (H bit 23) clock and reset; then hekate's rail
+  detect (UART2/3_TX pinmux = INPUT_ENABLE, G0/D1 GPIO inputs, 20 us,
+  dummy read, read H6/E6, low = attached) with the previous pinmux and
+  G0/D1 CNF/OE restored.
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

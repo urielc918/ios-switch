@@ -1,0 +1,136 @@
+From 90937f9f704270b6af73c343a23cd1f82344beb8 Mon Sep 17 00:00:00 2001
+From: x <x@x>
+Date: Fri, 6 Nov 2026 22:55:24 -0800
+Subject: [PATCH] nx-0985: boot-arg nxjc=1 logs the Joy-Con rail pin, GPIO,
+ charge-enable, 5V and UART-B/C clock state hekate left, and runs hekate's
+ rail attach detect (previous pin state restored)
+
+---
+ bsd/dev/nx_input.c | 104 +++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 104 insertions(+)
+
+diff --git a/bsd/dev/nx_input.c b/bsd/dev/nx_input.c
+index 91fe18e..1d24f91 100644
+--- a/bsd/dev/nx_input.c
++++ b/bsd/dev/nx_input.c
+@@ -1363,6 +1363,109 @@ nx_fan_start(void)
+ 	}
+ }
+ 
++/*
++ * Boot-arg nxjc=1: Joy-Con groundwork, report only (hekate bdk/input/joycon.c,
++ * soc/pinmux.h, soc/clock.c). Left rail = UART-C (pinmux UART3_*), right
++ * rail = UART-B (UART2_*), UART block at 0x70006000. Attach detect: the
++ * rail's UART TX line is also GPIO E6 (left) / H6 (right), low = attached.
++ * hekate reads it by making the UART TX pins inputs (pinmux UART2/3_TX =
++ * INPUT_ENABLE, GPIO G0/D1 = GPIO input), reading H6/E6 after 20 us (the
++ * first read only unlatches the buffer) and switching the TX pins back.
++ * Here the previous pinmux/GPIO values are saved and restored instead.
++ * Also logged: the charge enables (left: pinmux SPDIF_IN, GPIO CC3; right:
++ * GPIO_PK3, GPIO K3), the 5 V regulator (GPIO A5 enable, CC4 USB VBUS EN)
++ * and the CAR state of UART-B (L bit 7) and UART-C (H bit 23).
++ */
++#define PINMUX_UART2_TX         0x0F4u
++#define PINMUX_UART3_TX         0x104u
++#define PINMUX_SPDIF_IN         0x1A4u
++#define PINMUX_GPIO_PE6         0x248u
++#define PINMUX_GPIO_PH6         0x250u
++#define PINMUX_GPIO_PK3         0x260u
++#define GPIO_PORT_D             3u
++#define GPIO_PORT_E             4u
++#define GPIO_PORT_G             6u
++#define GPIO_PORT_H             7u
++#define GPIO_PORT_K             10u
++#define  CAR_L_UARTB            (1u << 7)
++#define  CAR_H_UARTC            (1u << 23)
++
++static uint32_t
++gpio_bit(uint32_t reg, uint32_t port, uint32_t pin)
++{
++	return (rd32(gpio_base + reg + GPIO_POFF(port)) >> pin) & 1u;
++}
++
++/* "cnf/oe/out/in" of one GPIO, as 4 digits. */
++static void
++jc_gpio_str(uint32_t port, uint32_t pin, char out[5])
++{
++	out[0] = (char)('0' + gpio_bit(0x00, port, pin));
++	out[1] = (char)('0' + gpio_bit(0x10, port, pin));
++	out[2] = (char)('0' + gpio_bit(0x20, port, pin));
++	out[3] = (char)('0' + gpio_bit(0x30, port, pin));
++	out[4] = '\0';
++}
++
++static void
++nx_jc_report(void)
++{
++	uint32_t on = 0;
++	if (!PE_parse_boot_argn("nxjc", &on, sizeof(on)) || on != 1) {
++		return;
++	}
++	vm_offset_t pinmux = ml_io_map(PINMUX_PA, 0x1000), car = ml_io_map(CAR_PA_BAT, 0x1000);
++	if (!pinmux || !car || !gpio_base) {
++		printf("NX JC: MMIO mapping failed\n");
++		return;
++	}
++	printf("NX JC: pinmux UART2 tx/rx/rts/cts %#x %#x %#x %#x, UART3 %#x %#x %#x %#x\n",
++	    rd32(pinmux + 0xF4), rd32(pinmux + 0xF8), rd32(pinmux + 0xFC), rd32(pinmux + 0x100),
++	    rd32(pinmux + 0x104), rd32(pinmux + 0x108), rd32(pinmux + 0x10C), rd32(pinmux + 0x110));
++	printf("NX JC: pinmux PE6 %#x PH6 %#x SPDIF_IN %#x PK3 %#x SATA_LED_ACTIVE %#x USB_VBUS_EN0 %#x\n",
++	    rd32(pinmux + PINMUX_GPIO_PE6), rd32(pinmux + PINMUX_GPIO_PH6), rd32(pinmux + PINMUX_SPDIF_IN),
++	    rd32(pinmux + PINMUX_GPIO_PK3), rd32(pinmux + PINMUX_SATA_LED_ACTIVE), rd32(pinmux + PINMUX_USB_VBUS_EN0));
++	char g0[5], d1[5], h6[5], e6[5], cc3[5], k3[5], a5[5], cc4[5];
++	jc_gpio_str(GPIO_PORT_G, 0, g0);
++	jc_gpio_str(GPIO_PORT_D, 1, d1);
++	jc_gpio_str(GPIO_PORT_H, 6, h6);
++	jc_gpio_str(GPIO_PORT_E, 6, e6);
++	jc_gpio_str(GPIO_PORT_CC, 3, cc3);
++	jc_gpio_str(GPIO_PORT_K, 3, k3);
++	jc_gpio_str(GPIO_PORT_A, 5, a5);
++	jc_gpio_str(GPIO_PORT_CC, 4, cc4);
++	printf("NX JC: GPIO cnf/oe/out/in G0 %s D1 %s H6 %s E6 %s, charge L CC3 %s R K3 %s, 5V A5 %s CC4 %s\n",
++	    g0, d1, h6, e6, cc3, k3, a5, cc4);
++	uint32_t enl = rd32(car + CAR_CLK_OUT_ENB_L), rstl = rd32(car + CAR_RST_DEVICES_L);
++	uint32_t enh = rd32(car + CAR_CLK_OUT_ENB_H), rsth = rd32(car + CAR_RST_DEVICES_H);
++	printf("NX JC: CAR UART-B clock %u reset %u, UART-C clock %u reset %u\n",
++	    !!(enl & CAR_L_UARTB), !!(rstl & CAR_L_UARTB), !!(enh & CAR_H_UARTC), !!(rsth & CAR_H_UARTC));
++
++	/* Rail detect, as hekate's _jc_rail_detect, restoring the previous state. */
++	uint32_t pm2 = rd32(pinmux + PINMUX_UART2_TX), pm3 = rd32(pinmux + PINMUX_UART3_TX);
++	uint32_t g0cnf = gpio_bit(0x00, GPIO_PORT_G, 0), g0oe = gpio_bit(0x10, GPIO_PORT_G, 0);
++	uint32_t d1cnf = gpio_bit(0x00, GPIO_PORT_D, 1), d1oe = gpio_bit(0x10, GPIO_PORT_D, 1);
++	wr32(pinmux + PINMUX_UART2_TX, PM_INPUT_ENABLE);
++	wr32(pinmux + PINMUX_UART3_TX, PM_INPUT_ENABLE);
++	gpio_msk(GPIO_MSK_OE, GPIO_PORT_G, 0, 0);
++	gpio_msk(GPIO_MSK_CNF, GPIO_PORT_G, 0, 1);
++	gpio_msk(GPIO_MSK_OE, GPIO_PORT_D, 1, 0);
++	gpio_msk(GPIO_MSK_CNF, GPIO_PORT_D, 1, 1);
++	delay(20);
++	(void)gpio_bit(0x30, GPIO_PORT_H, 6);
++	(void)gpio_bit(0x30, GPIO_PORT_E, 6);
++	uint32_t h = gpio_bit(0x30, GPIO_PORT_H, 6), e = gpio_bit(0x30, GPIO_PORT_E, 6);
++	wr32(pinmux + PINMUX_UART2_TX, pm2);
++	wr32(pinmux + PINMUX_UART3_TX, pm3);
++	gpio_msk(GPIO_MSK_CNF, GPIO_PORT_G, 0, g0cnf);
++	gpio_msk(GPIO_MSK_OE, GPIO_PORT_G, 0, g0oe);
++	gpio_msk(GPIO_MSK_CNF, GPIO_PORT_D, 1, d1cnf);
++	gpio_msk(GPIO_MSK_OE, GPIO_PORT_D, 1, d1oe);
++	delay(20);
++	printf("NX JC: rail detect: left %s (E6 %u), right %s (H6 %u)\n",
++	    e ? "not attached" : "attached", e, h ? "not attached" : "attached", h);
++}
++
+ /* Called once from IOFindBSDRoot (iokit/bsddev/IOKitBSDInit.cpp). */
+ void
+ nx_input_start(void)
+@@ -1388,6 +1491,7 @@ nx_input_start(void)
+ 		return;
+ 	}
+ 	nx_fan_start();
++	nx_jc_report();
+ 	nx_cpu_raise();
+ 	if (perf == 1 && cpu_raised) {
+ 		printf("NX PERF: again after the CPU raise\n");
+-- 
+2.55.0
+

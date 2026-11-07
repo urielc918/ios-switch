@@ -873,6 +873,9 @@ iOS space contiguous; never move/cross the emuMMC).
   with interrupts off (PMCR.E on, D off; MDCR_EL2.TPM/TPMCR are cleared by
   bl31 context_mgmt.c, so EL1 may use the PMU); memset/memcpy MB/s over
   32 MiB (4 rounds). Read-only.
+  CI run 42316548459: success; kernel `work/ci-42316548459/`. Test image
+  `work/img-0978-test/bl33.bin` (d70ed0f4..., 0977 main cmdline + `nxperf=1`)
+  on the card as "iOS NX (perf test)" (`switchroot/ios-test/`).
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

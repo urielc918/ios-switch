@@ -1254,6 +1254,25 @@ iOS space contiguous; never move/cross the emuMMC).
   cmdline + `nxjc=1`, i.e. nxcpu=1224 nxjc=1) replaced the 0984 DRAM report
   in `switchroot/ios-test/` (0984 image kept in `work/img-0984-test/`),
   entry "iOS NX (Joy-Con report)". Main unchanged.
+- **0985 on hardware (logs `logs/ioslog-bothjoycons.bin/.txt` and
+  `logs/ioslog-singlejoycon.bin/.txt`, user-named): detection works.**
+  Both on: `left attached (E6 0), right attached (H6 0)`; left removed:
+  `left not attached (E6 1), right attached (H6 0)`. State hekate leaves
+  (identical in both boots):
+  - pinmux UART2 and UART3: TX 0, RX 0x50, RTS 0, CTS 0x50 (=
+    hekate's pinmux_config_uart: TX/RTS driven, RX/CTS input|tristate);
+    PE6/PH6 0x50; charge enables configured: SPDIF_IN 0x5 (pull-down |
+    func 1), PK3 0x6006 (drive 4x | pull-down | func 2).
+  - GPIO (cnf/oe/out/in): G0 0000 and D1 0000 (SFIO = UART TX); H6/E6
+    1001 before detect (GPIO inputs reading 1 while the TX pins are on
+    the UART function, so detect needs the pin switch); **charge enables
+    CC3 1100 / K3 1100 = GPIO outputs, low (off)**; **5 V regulator A5 1100
+    = low (off)** at that point (fan duty 0; the fan code turns it on
+    with the fan); CC4 1100 (USB VBUS EN low, as wanted).
+  - **CAR: UART-B and UART-C clock off and held in reset** (hekate's
+    jc_deinit before the L4T launch). 0986 has to set the clock source,
+    enable the clocks and release reset.
+  The Joy-Cons run from their own batteries; rail 5 V is for charging.
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

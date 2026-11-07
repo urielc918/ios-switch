@@ -876,6 +876,16 @@ iOS space contiguous; never move/cross the emuMMC).
   CI run 42316548459: success; kernel `work/ci-42316548459/`. Test image
   `work/img-0978-test/bl33.bin` (d70ed0f4..., 0977 main cmdline + `nxperf=1`)
   on the card as "iOS NX (perf test)" (`switchroot/ios-test/`).
+- **0978 on hardware (log `work/ioslog-perf.bin/.txt`)**:
+  `PLLX 0x48209c02 = 998400 kHz, CCLK burst 0x20008888`;
+  `PLLM 0x4c107d03` (M 3, N 125, P bit 1 -> VCO 1600, out **800 MHz**),
+  `PLLMB 0x4c007d03` (**1600 MHz**, trained by hekate, idle), PLLC off;
+  `CLK_SOURCE_EMC 0x80188000` = source 4 (PLLM_UD), divider 1 -> **EMC
+  800 MHz**; `CPU 998400 kHz (49920086 cycles in 50000 us)`;
+  `memset 2317 MB/s, memcpy 1461 MB/s` (single core; far below LPDDR4
+  x64 at 800 MHz ~12.8 GB/s, so likely CPU-bound at 1 GHz).
+  Conclusion: CPU clock first (also raises copy bandwidth), with fan
+  control before it; DRAM 1600 later (PLLMB already set up).
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

@@ -1058,6 +1058,14 @@ iOS space contiguous; never move/cross the emuMMC).
   0980/0981) with -Werror= for unused, sign-compare, shorten-64-to-32,
   implicit-int-conversion, uninitialized, format, shadow, etc.: 0 errors
   (an injected unused variable is caught). CI itself has no -Werror.
+  CI run 42336714117: success, 228 applied, same skipped-patch/tool error
+  lines; kernel `work/ci-42336714117/` (SHA256SUMS OK). Test image
+  `work/img-0981-test/bl33.bin` (8a2a9067..., proven shim + payload, main
+  cmdline + `nxperf=1 nxcpu=1224`) replaced the 0980 CPU report in
+  `switchroot/ios-test/` (0980 image kept at `work/img-0980-test/`); entry
+  renamed "iOS NX (CPU 1224 MHz test)". Main stays the fixed 0979.
+  nxperf's 0978 lines run before the raise (they show 998 MHz); the raise
+  logs its own measured kHz.
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

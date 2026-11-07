@@ -905,6 +905,9 @@ iOS space contiguous; never move/cross the emuMMC).
   fs sync). Log `NX FAN: SoC .. C, board .. C, duty a -> b/236` on change
   and every minute, `NX FAN: tachometer N rpm` once when it first runs.
   Boot-arg `nxfan=0` = leave the fan alone.
+  CI run 42328495373: success, 226 applied; kernel `work/ci-42328495373/`.
+  Test image `work/img-0979-test/bl33.bin` (ee7adf79..., 0977 main cmdline)
+  for `switchroot/ios-test/` ("iOS NX (fan test)"); not on the card yet.
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

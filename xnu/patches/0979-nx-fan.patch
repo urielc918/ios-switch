@@ -5,14 +5,14 @@ Subject: [PATCH] nx-0979: fan control from the TMP451 SoC temperature (PWM1, 5
  V regulator, tachometer check), power off at 92 C, boot-arg nxfan=0
 
 ---
- bsd/dev/nx_input.c | 233 +++++++++++++++++++++++++++++++++++++++++++++
- 1 file changed, 233 insertions(+)
+ bsd/dev/nx_input.c | 245 +++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 245 insertions(+)
 
 diff --git a/bsd/dev/nx_input.c b/bsd/dev/nx_input.c
-index 30f7eab..87b4d95 100644
+index 30f7eab..06e26a9 100644
 --- a/bsd/dev/nx_input.c
 +++ b/bsd/dev/nx_input.c
-@@ -717,6 +717,238 @@ nx_perf_report(void)
+@@ -717,6 +717,250 @@ nx_perf_report(void)
  	    nset ? 4ull * sz * 1000 / nset : 0, ncpy ? 4ull * half * 1000 / ncpy : 0);
  }
  
@@ -29,7 +29,7 @@ index 30f7eab..87b4d95 100644
 + *    PWR_DET_VAL bit 21 cleared (GPIO pads at 1.8 V); tachometer on GPIO S7
 + *    (pinmux CAM1_PWDN tristate, input, pull-up).
 + * hekate leaves the fan as it was: nothing ran it under XNU before.
-+ * Every 2 s: fan duty from the SoC temperature (hysteresis below 42 C);
++ * Every 2 s: fan duty from the SoC temperature (fan_curve, 3 C hysteresis);
 + * 92 C or more twice in a row: power off (last resort, no filesystem sync).
 + */
 +#define PWM_PA                  0x7000A000u
@@ -155,10 +155,26 @@ index 30f7eab..87b4d95 100644
 +
 +static int fan_chan;
 +
++/*
++ * Fan curve on the SoC temperature (centidegrees C). A step is taken as soon
++ * as the SoC reaches its threshold and left only once it is FAN_HYST below
++ * it, so the fan doesn't flip between two duties near a threshold and comes
++ * back down one step at a time after a hot spell.
++ */
++static const struct {
++	int on;
++	uint32_t duty;
++} fan_curve[] = {
++	{ 4200, 51 }, { 4700, 76 }, { 5200, 102 }, { 6000, 153 }, { 7000, FAN_MAX },
++};
++#define FAN_STEPS               (sizeof(fan_curve) / sizeof(fan_curve[0]))
++#define FAN_HYST                300
++#define FAN_ERROR_DUTY          102u    /* minimum duty while the sensor can't be read */
++
 +static void
 +fan_thread(__unused void *arg, __unused wait_result_t wr)
 +{
-+	uint32_t duty = 0, logs = 0, hot = 0;
++	uint32_t duty = 0, logs = 0, hot = 0, step = 0;     /* step 0 = off, k = fan_curve[k - 1] */
 +	bool rpm_checked = false;
 +	uint64_t first;
 +	clock_interval_to_deadline(1100, NSEC_PER_MSEC, &first);       /* first conversion at 1 Hz */
@@ -167,21 +183,17 @@ index 30f7eab..87b4d95 100644
 +	for (;;) {
 +		int soc = 0, pcb = 0;
 +		int error = tmp_read(0x01, 0x10, &soc) || tmp_read(0x00, 0x15, &pcb) ? EIO : 0;
-+		uint32_t want = duty;
-+		if (error) {
-+			want = 102;                     /* can't read the sensor: run the fan */
-+		} else if (soc >= 7000) {
-+			want = FAN_MAX;
-+		} else if (soc >= 6000) {
-+			want = 153;
-+		} else if (soc >= 5200) {
-+			want = 102;
-+		} else if (soc >= 4700) {
-+			want = 76;
-+		} else if (soc >= 4200) {
-+			want = 51;
-+		} else if (soc <= 3900) {
-+			want = 0;
++		if (!error) {
++			while (step < FAN_STEPS && soc >= fan_curve[step].on) {
++				step++;
++			}
++			while (step > 0 && soc <= fan_curve[step - 1].on - FAN_HYST) {
++				step--;
++			}
++		}
++		uint32_t want = step ? fan_curve[step - 1].duty : 0;
++		if (error && want < FAN_ERROR_DUTY) {
++			want = FAN_ERROR_DUTY;          /* can't read the sensor: run the fan, never slower */
 +		}
 +		if (want != duty || logs % 30 == 0) {
 +			printf("NX FAN: SoC %d.%02d C, board %d.%02d C, duty %u -> %u/236%s\n",
@@ -251,7 +263,7 @@ index 30f7eab..87b4d95 100644
  /* Called once from IOFindBSDRoot (iokit/bsddev/IOKitBSDInit.cpp). */
  void
  nx_input_start(void)
-@@ -739,6 +971,7 @@ nx_input_start(void)
+@@ -739,6 +983,7 @@ nx_input_start(void)
  		printf("NX INPUT: MMIO mapping failed\n");
  		return;
  	}

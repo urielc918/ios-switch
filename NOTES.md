@@ -938,6 +938,21 @@ iOS space contiguous; never move/cross the emuMMC).
     ab1e6d2e... (`work/img-0979-test/`, main cmdline); previous main kept
     as `bl33-0977.bin` (bf3f552d...). Fan test entry `ios-nx-test.ini` and
     `switchroot/ios-test/` removed. (0978 was a test-only image, never main.)
+- **0979 second run (log `logs/ioslog-12.bin/.txt`)**: same as the first:
+  duty 0 -> 51 at 42.00 C, tachometer 2400 rpm, then 40.6-41.8 C at duty 51
+  until a volume-up shutdown. Battery 10%, -311 mA on the PC port.
+- **0979 fan curve fix (0979 replaced in place)**: review of the curve found
+  (1) the 39-42 C band kept *any* previous duty, so after a hot spell the
+  fan stayed at e.g. 236 until the SoC fell to 39 C; (2) no hysteresis on
+  the 47/52/60/70 C steps, so the duty would flip every 2 s near a step;
+  (3) a sensor error set duty 102 even if it was higher. Now a `fan_curve`
+  table (same thresholds and duties) with a step index: up as soon as the
+  SoC reaches a threshold, down one step once it is 3 C (FAN_HYST) below
+  the current step's threshold (51 -> off at <= 39 C, as before); sensor
+  error = at least 102, step kept. Behaviour seen in both logs is
+  unchanged. Host simulation of the loop (`work/fancurve-test/t.c`) and
+  `xnu-cc.py` on the CI 42328495373 buildtree (`work/bt-0979`): 0 errors;
+  the new patch applies to the pre-0979 nx_input.c.
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

@@ -1249,6 +1249,11 @@ iOS space contiguous; never move/cross the emuMMC).
   detect (UART2/3_TX pinmux = INPUT_ENABLE, G0/D1 GPIO inputs, 20 us,
   dummy read, read H6/E6, low = attached) with the previous pinmux and
   G0/D1 CNF/OE restored.
+  CI run 42349080707: success, 232 applied, same error lines; kernel
+  `work/ci-42349080707/`. Test image `work/img-0985-test/bl33.bin` (main
+  cmdline + `nxjc=1`, i.e. nxcpu=1224 nxjc=1) replaced the 0984 DRAM report
+  in `switchroot/ios-test/` (0984 image kept in `work/img-0984-test/`),
+  entry "iOS NX (Joy-Con report)". Main unchanged.
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

@@ -1,0 +1,264 @@
+From 2d6361343e39695bff870dfe94b69e9fe04739f0 Mon Sep 17 00:00:00 2001
+From: x <x@x>
+Date: Fri, 6 Nov 2026 18:17:27 -0800
+Subject: [PATCH] nx-0979: fan control from the TMP451 SoC temperature (PWM1, 5
+ V regulator, tachometer check), power off at 92 C, boot-arg nxfan=0
+
+---
+ bsd/dev/nx_input.c | 233 +++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 233 insertions(+)
+
+diff --git a/bsd/dev/nx_input.c b/bsd/dev/nx_input.c
+index 30f7eab..87b4d95 100644
+--- a/bsd/dev/nx_input.c
++++ b/bsd/dev/nx_input.c
+@@ -717,6 +717,238 @@ nx_perf_report(void)
+ 	    nset ? 4ull * sz * 1000 / nset : 0, ncpy ? 4ull * half * 1000 / ncpy : 0);
+ }
+ 
++/*
++ * Fan and temperature (boot-arg nxfan=0 leaves both alone), as hekate's
++ * bdk/thermal/fan.c, tmp451.c and power/regulator_5v.c (Erista):
++ *  - TMP451 at I2C1 0x4C: config 0x09 = 0x80 (run, 0-127 C), SoC offset 0,
++ *    conversion rate 0x0A = 4 (1 Hz); SoC (remote) 0x01 + 0x10 >> 4 x
++ *    0.0625 C, board (local) 0x00 + 0x15.
++ *  - Fan: PWM channel 1 (0x7000A010, inverted: CSR = EN | (236 - duty) << 16,
++ *    duty 0-236; 0x100 << 16 = fully off), pinmux LCD_GPIO2 = 1 (PWM1),
++ *    GPIO V4 SFIO; power from the 5 V regulator: pinmux SATA_LED_ACTIVE = 1,
++ *    GPIO A5 high, GPIO CC4 (USB VBUS EN) low, PMC NO_IOPOWER and
++ *    PWR_DET_VAL bit 21 cleared (GPIO pads at 1.8 V); tachometer on GPIO S7
++ *    (pinmux CAM1_PWDN tristate, input, pull-up).
++ * hekate leaves the fan as it was: nothing ran it under XNU before.
++ * Every 2 s: fan duty from the SoC temperature (hysteresis below 42 C);
++ * 92 C or more twice in a row: power off (last resort, no filesystem sync).
++ */
++#define PWM_PA                  0x7000A000u
++#define PWM_CSR_1               0x10u
++#define  PWM_CSR_EN             (1u << 31)
++#define PINMUX_PA               0x70003000u
++#define PINMUX_SATA_LED_ACTIVE  0x04Cu
++#define PINMUX_USB_VBUS_EN0     0x1A8u
++#define PINMUX_CAM1_PWDN        0x1ECu
++#define PINMUX_LCD_GPIO2        0x20Cu
++#define  PM_PULL_DOWN           (1u << 2)
++#define  PM_PULL_UP             (2u << 2)
++#define  PM_TRISTATE            (1u << 4)
++#define  PM_PARKED              (1u << 5)
++#define  PM_INPUT_ENABLE        (1u << 6)
++#define  PM_LPDR                (1u << 8)
++#define PMC_NO_IOPOWER          0x444u          /* in the 0x7000E000 page */
++#define PMC_PWR_DET_VAL         0x4E4u
++#define  PMC_GPIO_BIT           (1u << 21)
++#define  CAR_L_PWM              (1u << 17)
++#define GPIO_PORT_A             0u
++#define GPIO_PORT_S             18u
++#define GPIO_PORT_V             21u
++#define GPIO_PORT_CC            28u
++#define GPIO_POFF(p)            ((((p) >> 2) << 8) + (((p) & 3u) << 2))
++#define TMP_ADDR                0x4C
++#define FAN_MAX                 236u
++
++static vm_offset_t fan_pwm, fan_pinmux, fan_pmc;
++static bool fan_5v_on;
++
++static void
++gpio_msk(uint32_t base_off, uint32_t port, uint32_t pin, uint32_t val)
++{
++	/* Masked registers: bits 15:8 select, bits 7:0 value. */
++	wr32(gpio_base + base_off + GPIO_POFF(port), (1u << (pin + 8)) | ((val ? 1u : 0u) << pin));
++}
++#define GPIO_MSK_CNF            0x80u
++#define GPIO_MSK_OE             0x90u
++#define GPIO_MSK_OUT            0xA0u
++
++static void
++fan_5v(bool on)
++{
++	if (on == fan_5v_on) {
++		return;
++	}
++	if (on) {
++		wr32(fan_pinmux + PINMUX_SATA_LED_ACTIVE, 1);
++		gpio_msk(GPIO_MSK_CNF, GPIO_PORT_A, 5, 1);
++		gpio_msk(GPIO_MSK_OUT, GPIO_PORT_A, 5, 1);
++		gpio_msk(GPIO_MSK_OE, GPIO_PORT_A, 5, 1);
++		wr32(fan_pinmux + PINMUX_USB_VBUS_EN0, PM_LPDR | 1);
++		gpio_msk(GPIO_MSK_CNF, GPIO_PORT_CC, 4, 1);
++		gpio_msk(GPIO_MSK_OUT, GPIO_PORT_CC, 4, 0);
++		gpio_msk(GPIO_MSK_OE, GPIO_PORT_CC, 4, 1);
++		wr32(fan_pmc + PMC_NO_IOPOWER, rd32(fan_pmc + PMC_NO_IOPOWER) & ~PMC_GPIO_BIT);
++		(void)rd32(fan_pmc + PMC_NO_IOPOWER);
++		wr32(fan_pmc + PMC_PWR_DET_VAL, rd32(fan_pmc + PMC_PWR_DET_VAL) & ~PMC_GPIO_BIT);
++		(void)rd32(fan_pmc + PMC_PWR_DET_VAL);
++	} else {
++		gpio_msk(GPIO_MSK_OUT, GPIO_PORT_A, 5, 0);
++		gpio_msk(GPIO_MSK_OUT, GPIO_PORT_CC, 4, 0);
++	}
++	fan_5v_on = on;
++}
++
++static void
++fan_duty(uint32_t duty)
++{
++	if (duty > FAN_MAX) {
++		duty = FAN_MAX;
++	}
++	if (duty == 0) {
++		wr32(fan_pwm + PWM_CSR_1, PWM_CSR_EN | (0x100u << 16));
++		fan_5v(false);
++		wr32(fan_pinmux + PINMUX_LCD_GPIO2, PM_INPUT_ENABLE | PM_PARKED | PM_TRISTATE | PM_PULL_DOWN);
++	} else {
++		fan_5v(true);
++		wr32(fan_pwm + PWM_CSR_1, PWM_CSR_EN | ((FAN_MAX - duty) << 16));
++		wr32(fan_pinmux + PINMUX_LCD_GPIO2, 1);
++	}
++}
++
++/* Tachometer: rising edges on GPIO S7 over 1 s, sampled every 0.5 ms; 2 pulses per turn. */
++static uint32_t
++fan_rpm(void)
++{
++	uint32_t rises = 0, last = 1;
++	for (int i = 0; i < 2000; i++) {
++		uint32_t v = (rd32(gpio_base + 0x30u + GPIO_POFF(GPIO_PORT_S)) >> 7) & 1u;
++		if (v && !last) {
++			rises++;
++		}
++		last = v;
++		delay(500);
++	}
++	return rises * 30;
++}
++
++static int
++tmp_reg(uint8_t reg, uint8_t *val)
++{
++	return nx_i2c_rs(1, TMP_ADDR, &reg, 1, val, 1);
++}
++
++static int
++tmp_write(uint8_t reg, uint8_t val)
++{
++	uint8_t w[2] = { reg, val };
++	return nx_i2c_xfer(1, TMP_ADDR, w, 2, NULL, 0);
++}
++
++/* Centidegrees C from an integer register and its fraction register (bits 7:4 x 0.0625). */
++static int
++tmp_read(uint8_t ireg, uint8_t freg, int *c100)
++{
++	uint8_t i = 0, f = 0;
++	int error = tmp_reg(ireg, &i) || tmp_reg(freg, &f) ? EIO : 0;
++	*c100 = (int)i * 100 + (int)(f >> 4) * 625 / 100;
++	return error;
++}
++
++static int fan_chan;
++
++static void
++fan_thread(__unused void *arg, __unused wait_result_t wr)
++{
++	uint32_t duty = 0, logs = 0, hot = 0;
++	bool rpm_checked = false;
++	uint64_t first;
++	clock_interval_to_deadline(1100, NSEC_PER_MSEC, &first);       /* first conversion at 1 Hz */
++	(void)assert_wait_deadline(&fan_chan, THREAD_UNINT, first);
++	(void)thread_block(THREAD_CONTINUE_NULL);
++	for (;;) {
++		int soc = 0, pcb = 0;
++		int error = tmp_read(0x01, 0x10, &soc) || tmp_read(0x00, 0x15, &pcb) ? EIO : 0;
++		uint32_t want = duty;
++		if (error) {
++			want = 102;                     /* can't read the sensor: run the fan */
++		} else if (soc >= 7000) {
++			want = FAN_MAX;
++		} else if (soc >= 6000) {
++			want = 153;
++		} else if (soc >= 5200) {
++			want = 102;
++		} else if (soc >= 4700) {
++			want = 76;
++		} else if (soc >= 4200) {
++			want = 51;
++		} else if (soc <= 3900) {
++			want = 0;
++		}
++		if (want != duty || logs % 30 == 0) {
++			printf("NX FAN: SoC %d.%02d C, board %d.%02d C, duty %u -> %u/236%s\n",
++			    soc / 100, soc % 100, pcb / 100, pcb % 100, duty, want, error ? " (sensor error)" : "");
++		}
++		if (want != duty) {
++			fan_duty(want);
++			duty = want;
++		}
++		if (duty && !rpm_checked) {
++			rpm_checked = true;
++			printf("NX FAN: tachometer %u rpm at duty %u/236\n", fan_rpm(), duty);
++		}
++		hot = (!error && soc >= 9200) ? hot + 1 : 0;
++		if (hot >= 2) {
++			printf("NX FAN: SoC %d.%02d C twice in a row, powering off\n", soc / 100, soc % 100);
++			(void)nx_halt_restart(0);
++		}
++		logs++;
++		uint64_t deadline;
++		clock_interval_to_deadline(2000, NSEC_PER_MSEC, &deadline);
++		(void)assert_wait_deadline(&fan_chan, THREAD_UNINT, deadline);
++		(void)thread_block(THREAD_CONTINUE_NULL);
++	}
++}
++
++static void
++nx_fan_start(void)
++{
++	uint32_t on = 1;
++	thread_t thread;
++	(void)PE_parse_boot_argn("nxfan", &on, sizeof(on));
++	if (!on) {
++		printf("NX FAN: disabled (nxfan=0)\n");
++		return;
++	}
++	vm_offset_t car = ml_io_map(CAR_PA_BAT, 0x1000);
++	fan_pwm = ml_io_map(PWM_PA, 0x1000);
++	fan_pinmux = ml_io_map(PINMUX_PA, 0x1000);
++	fan_pmc = ml_io_map(PMC_PA, 0x1000);
++	if (!car || !fan_pwm || !fan_pinmux || !fan_pmc || !gpio_base) {
++		printf("NX FAN: MMIO mapping failed\n");
++		return;
++	}
++	uint32_t enb = rd32(car + CAR_CLK_OUT_ENB_L), rst = rd32(car + CAR_RST_DEVICES_L);
++	if (!(enb & CAR_L_PWM) || (rst & CAR_L_PWM) || !(enb & CAR_L_I2C1) || (rst & CAR_L_I2C1)) {
++		printf("NX FAN: PWM or I2C1 not clocked (CAR enb %#x rst %#x), fan left alone\n", enb, rst);
++		return;
++	}
++	if (tmp_write(0x09, 0x80) || tmp_write(0x11, 0) || tmp_write(0x12, 0) || tmp_write(0x0A, 4)) {
++		printf("NX FAN: TMP451 setup failed, fan left alone\n");
++		return;
++	}
++	/* Tachometer input, then PWM1 off with the pin on PWM1, as hekate's fan_set_duty init. */
++	wr32(fan_pinmux + PINMUX_CAM1_PWDN, PM_TRISTATE | PM_INPUT_ENABLE | PM_PULL_UP | 1);
++	gpio_msk(GPIO_MSK_CNF, GPIO_PORT_S, 7, 1);
++	gpio_msk(GPIO_MSK_OE, GPIO_PORT_S, 7, 0);
++	wr32(fan_pwm + PWM_CSR_1, PWM_CSR_EN | (0x100u << 16));
++	wr32(fan_pinmux + PINMUX_LCD_GPIO2, 1);
++	gpio_msk(GPIO_MSK_CNF, GPIO_PORT_V, 4, 0);
++	fan_5v_on = false;
++	if (kernel_thread_start(fan_thread, NULL, &thread) == KERN_SUCCESS) {
++		thread_deallocate(thread);
++	}
++}
++
+ /* Called once from IOFindBSDRoot (iokit/bsddev/IOKitBSDInit.cpp). */
+ void
+ nx_input_start(void)
+@@ -739,6 +971,7 @@ nx_input_start(void)
+ 		printf("NX INPUT: MMIO mapping failed\n");
+ 		return;
+ 	}
++	nx_fan_start();
+ 	(void)PE_parse_boot_argn("nxkeys", &keys, sizeof(keys));
+ 	if (!keys) {
+ 		printf("NX KEYS: disabled (nxkeys=0)\n");
+-- 
+2.56.0
+

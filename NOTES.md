@@ -886,6 +886,25 @@ iOS space contiguous; never move/cross the emuMMC).
   x64 at 800 MHz ~12.8 GB/s, so likely CPU-bound at 1 GHz).
   Conclusion: CPU clock first (also raises copy bandwidth), with fan
   control before it; DRAM 1600 later (PLLMB already set up).
+- **0979-nx-fan (written, syntax-checked, pushed for CI)**: fan control in
+  nx_input.c, as hekate's bdk/thermal/fan.c + tmp451.c +
+  power/regulator_5v.c. hekate's `BDK_HW_EXTRA_DEINIT` block (tmp451_end,
+  fan_set_duty(0)) is not compiled in, so the fan stays as hekate/Nyx left
+  it; nothing ran it under XNU before. TMP451 (I2C1 0x4C): config 0x09 =
+  0x80, SoC offset 0x11/0x12 = 0 (Erista), rate 0x0A = 4 (1 Hz); SoC =
+  0x01 + 0x10, board = 0x00 + 0x15 (frac bits 7:4 x 0.0625 C). Fan: PWM
+  CSR_1 0x7000A010 = EN | (236 - duty) << 16 (0x100 << 16 = off), pinmux
+  LCD_GPIO2 (0x7000320C) = 1 (PWM1), GPIO V4 SFIO; 5 V regulator: pinmux
+  SATA_LED_ACTIVE = 1, GPIO A5 high, pinmux USB_VBUS_EN0 = LPDR|1 + GPIO
+  CC4 low, PMC NO_IOPOWER/PWR_DET_VAL bit 21 cleared; tachometer GPIO S7
+  (pinmux CAM1_PWDN tristate|input|pull-up|1), rpm = rising edges/s x 30.
+  GPIO writes use the masked registers (+0x80/0x90/0xA0). Checks CAR PWM
+  (L bit 17) and I2C1 (L bit 12) clocked first. Thread every 2 s; curve on
+  SoC temp: <= 39 off, 42 51, 47 76, 52 102 (hekate's) + 60 153, 70 236;
+  sensor error -> 102. >= 92 C twice -> nx_halt_restart(0) (power off, no
+  fs sync). Log `NX FAN: SoC .. C, board .. C, duty a -> b/236` on change
+  and every minute, `NX FAN: tachometer N rpm` once when it first runs.
+  Boot-arg `nxfan=0` = leave the fan alone.
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

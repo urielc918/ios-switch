@@ -1206,6 +1206,29 @@ iOS space contiguous; never move/cross the emuMMC).
   cmdline + `nxperf=1 nxcpu=1224`) replaced the 0983 perf test in
   `switchroot/ios-test/` (0983 image kept in `work/img-0983-test/`), entry
   renamed "iOS NX (DRAM report)". Main unchanged.
+- **0984 on hardware (log `logs/ioslog-18.bin/.txt`)**: works, nothing hung.
+  `MC_EMEM_CFG 0x1000 (4096 MiB), MC_EMEM_ADR_CFG 0x1`; bl31: `base
+  0xffe80000 (ret 0), size 24640 (ret 0), 5 entries of 4928` (1 MiB TZDRAM
+  build). Entries (rev 0x7, dvfs_ver "10_<rate>_NoCfgVersion_V9.8.7_V1.6",
+  all trained 1, GPU min 1100 mV):
+  [0] 204000 kHz, min 800 mV, pllp_out0, CLK_SOURCE_EMC 0x40188002, periodic 0;
+  [1] 408000, 812 mV, pllp_ud, 0xe0188000, needs_training 0x10, periodic 0;
+  [2] 800000, 825 mV, pllm_ud, **0x80188000 (= live register)**, 0xd0, periodic 0;
+  [3] 1331200, 850 mV, pllm_ud, 0x80188000, 0x2f0, **periodic 1**;
+  [4] 1600000, 887 mV, pllm_ud, 0x80188000, 0x2f0, **periodic 1**.
+  SoC rail SD0 is 1125 mV, above every min_volt. The table matches the live
+  800 MHz state. 1331/1600 need periodic training (Linux
+  tegra210-emc-core.c: a timer calls the sequence's periodic_compensation
+  every training_interval ms while at those rates).
+  - What a 1600 MHz switch needs: the T210 EMC clock-change sequence =
+    Linux drivers/memory/tegra/tegra210-emc-cc-r21021.c (1517 lines,
+    GPL-2.0, NVIDIA) + core (2062 lines), or hekate's minerva
+    (sys_sdrammtc.c, 4055 lines, GPLv2). Licensing rule of this repo: use
+    GPL code for facts only, don't copy; XNU patches are APSL. So 0985
+    means a clean reimplementation of the sequence (large) plus periodic
+    compensation, not a small patch like 0981.
+  - Shutdown in this run: plain power off (`NX POWER: shutdown requested ->
+    power off`), restore line OK.
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

@@ -1,0 +1,121 @@
+From 55815e7819e2c46dc8aa1f02daa48f6c394cd204 Mon Sep 17 00:00:00 2001
+From: x <x@x>
+Date: Fri, 6 Nov 2026 22:28:14 -0800
+Subject: [PATCH] nx-0984: with nxperf=1, log the DRAM timing (MTC) tables
+ hekate trained, read-only (address/size from bl31 SiP SMC 0xC2FFFE01), and
+ MC_EMEM_CFG/ADR_CFG
+
+---
+ bsd/dev/nx_input.c | 89 ++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 89 insertions(+)
+
+diff --git a/bsd/dev/nx_input.c b/bsd/dev/nx_input.c
+index 4998dd2..91fe18e 100644
+--- a/bsd/dev/nx_input.c
++++ b/bsd/dev/nx_input.c
+@@ -816,6 +816,94 @@ nx_cpu_report(void)
+ 	}
+ }
+ 
++/*
++ * Boot-arg nxperf=1, part 3: the DRAM timing (MTC) tables hekate trained,
++ * read-only, groundwork for a DRAM clock change.
++ *  - hekate's L4T launcher (bootloader/l4t/l4t.c) trains the tables
++ *    (minerva_prep_boot_l4t, leaves the EMC at 800 MHz), copies them to
++ *    MTCTABLE_BASE = SECFW_BASE + 512 KiB (0xFFE80000 with 1 MiB TZDRAM,
++ *    0xFF780000 with 8 MiB) and passes base and size to bl31.
++ *  - bl31 (CTCaer switch-l4t-atf plat/nvidia/tegra/soc/t210/plat_sip_calls.c)
++ *    returns them for SiP SMC 0xC2FFFE01 (TEGRA_SIP_EMC_COMMANDS, non-secure
++ *    callers only): x1 = 0xAA -> base in x1, x1 = 0xBB -> size in x1, x0 = 0.
++ *  - The SECFW carveout (MC carveout 1) allows non-secure CPU reads
++ *    (SEC_CARVEOUT_CFG_RD_NS, CCPLEX read access), and the region is below
++ *    XNU's RAM (0x1_0000_0000+), so XNU can't have overwritten it.
++ *  - Entries are hekate's emc_table_t (modules/hekate_libsys_minerva/
++ *    mtc_table.h; Linux's tegra210 EMC timing layout), 4928 bytes: rev @0,
++ *    dvfs_ver[60] @4, rate_khz @64, min_volt @68, gpu_min_volt @72,
++ *    clock_src[32] @76, clk_src_emc @108, needs_training @112,
++ *    training_pattern @116, trained @120, periodic_training @124.
++ *  - MC_EMEM_CFG (0x70019050, DRAM size in MiB) and MC_EMEM_ADR_CFG (0x54).
++ * Mapped as device memory and read with aligned 32-bit loads only.
++ */
++#define TEGRA_SIP_EMC_COMMANDS  0xC2FFFE01ULL
++#define EMC_TABLE_ADDR          0xAAull
++#define EMC_TABLE_SIZE          0xBBull
++#define EMC_TABLE_ENTRY_SIZE    4928u
++#define MC_PA                   0x70019000u
++#define MC_EMEM_CFG             0x50u
++#define MC_EMEM_ADR_CFG         0x54u
++
++static uint64_t
++sip_emc(uint64_t what, uint64_t *val)
++{
++	register uint64_t x0 __asm__("x0") = TEGRA_SIP_EMC_COMMANDS;
++	register uint64_t x1 __asm__("x1") = what;
++	__asm__ volatile ("smc #0" : "+r"(x0), "+r"(x1) : :
++	    "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11",
++	    "x12", "x13", "x14", "x15", "x16", "x17", "cc", "memory");
++	*val = x1;
++	return x0;
++}
++
++/* Copy a NUL-terminated string field out of device memory with 32-bit loads. */
++static void
++emc_str(vm_offset_t base, uint32_t off, uint32_t len, char *out)
++{
++	uint32_t i;
++	for (i = 0; i + 4 <= len; i += 4) {
++		uint32_t w = rd32(base + off + i);
++		memcpy(out + i, &w, 4);
++	}
++	out[len - 1] = '\0';
++}
++
++static void
++nx_emc_report(void)
++{
++	vm_offset_t mc = ml_io_map(MC_PA, 0x1000);
++	if (mc) {
++		printf("NX EMC: MC_EMEM_CFG %#x (%u MiB), MC_EMEM_ADR_CFG %#x\n",
++		    rd32(mc + MC_EMEM_CFG), rd32(mc + MC_EMEM_CFG) & 0x3FFFu, rd32(mc + MC_EMEM_ADR_CFG));
++	}
++	uint64_t base = 0, size = 0;
++	uint64_t e0 = sip_emc(EMC_TABLE_ADDR, &base), e1 = sip_emc(EMC_TABLE_SIZE, &size);
++	printf("NX EMC: bl31 MTC table: base %#llx (ret %#llx), size %llu (ret %#llx), %llu entries of %u\n",
++	    base, e0, size, e1, size / EMC_TABLE_ENTRY_SIZE, EMC_TABLE_ENTRY_SIZE);
++	if (e0 || e1 || base < 0x80000000ull || base >= 0x100000000ull || (base & 0xFFFu) ||
++	    size == 0 || size % EMC_TABLE_ENTRY_SIZE || size > 16u * EMC_TABLE_ENTRY_SIZE ||
++	    base + size > 0x100000000ull) {
++		printf("NX EMC: table address/size not as expected, not read\n");
++		return;
++	}
++	vm_offset_t t = ml_io_map((vm_offset_t)base, (vm_size_t)((size + 0xFFFu) & ~0xFFFull));
++	if (!t) {
++		printf("NX EMC: table mapping failed\n");
++		return;
++	}
++	for (uint32_t i = 0; i < size / EMC_TABLE_ENTRY_SIZE; i++) {
++		vm_offset_t e = t + i * EMC_TABLE_ENTRY_SIZE;
++		char ver[60], src[32];
++		emc_str(e, 4, sizeof(ver), ver);
++		emc_str(e, 76, sizeof(src), src);
++		printf("NX EMC: [%u] rev %#x %u kHz, min %u mV (GPU %u), src \"%s\" CLK_SOURCE_EMC %#x, "
++		    "needs_training %#x pattern %u trained %u periodic %u, \"%s\"\n",
++		    i, rd32(e + 0), rd32(e + 64), rd32(e + 68), rd32(e + 72), src, rd32(e + 108),
++		    rd32(e + 112), rd32(e + 116), rd32(e + 120), rd32(e + 124), ver);
++	}
++}
++
+ /*
+  * Boot-arg nxcpu=1020|1122|1224 (MHz): raise the CPU clock (PLLX) and the
+  * MAX77621 CPU rail. Off by default.
+@@ -1291,6 +1379,7 @@ nx_input_start(void)
+ 	if (PE_parse_boot_argn("nxperf", &perf, sizeof(perf)) && perf == 1) {
+ 		nx_perf_report();
+ 		nx_cpu_report();
++		nx_emc_report();
+ 	}
+ 	gpio_base = ml_io_map(GPIO_PA, 0x1000);
+ 	i2c_base = ml_io_map(I2C_PA, 0x2000);
+-- 
+2.55.0
+

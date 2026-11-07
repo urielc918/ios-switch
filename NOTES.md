@@ -1182,6 +1182,25 @@ iOS space contiguous; never move/cross the emuMMC).
   for memory-heavy work (CPU rendering): DRAM 1600 MHz (PLLMB is already
   trained to 1600 by hekate); DFLL only for compute-bound work. Multi-core
   bandwidth not measured yet.
+- **0984-nx-emc-report (written, syntax-checked, pushed for CI)**: read-only
+  DRAM groundwork, with nxperf=1 after the 0980 lines (`NX EMC:`):
+  MC_EMEM_CFG (0x70019050) / MC_EMEM_ADR_CFG (0x54); the MTC table from
+  bl31: SiP SMC **0xC2FFFE01** (TEGRA_SIP_EMC_COMMANDS, CTCaer
+  switch-l4t-atf ed2ef6be plat/nvidia/tegra/soc/t210/plat_sip_calls.c,
+  `work/switch-l4t-atf/`) x1 = 0xAA -> base, 0xBB -> size (in x1, x0 = 0;
+  non-secure callers only). hekate (l4t.c) puts it at MTCTABLE_BASE =
+  SECFW_BASE + 512 KiB = TZDRAM_BASE - 1 MiB + 512 KiB: 0xFFE80000 (1 MiB
+  TZDRAM) or 0xFF780000 (8 MiB); SECFW carveout = MC carveout 1, CFG0
+  RD_NS|RD_SEC|WR_NS|WR_SEC|LOCKED, CCPLEX R/W, so XNU may read it; it is
+  below XNU's RAM (0x1_0000_0000+). Entry = hekate emc_table_t
+  (mtc_table.h), **4928 bytes** (host sizeof, `work/emc/sz.c`): rev @0,
+  dvfs_ver[60] @4, rate_khz @64, min_volt @68, gpu_min_volt @72,
+  clock_src[32] @76, clk_src_emc @108, needs_training @112,
+  training_pattern @116, trained @120, periodic_training @124. Checks
+  before mapping: ret 0, 0x80000000 <= base < 4 GiB, page-aligned, size a
+  multiple of 4928, <= 16 entries. Device mapping, aligned 32-bit loads.
+  One line per entry: rate, min mV, clock_src, CLK_SOURCE_EMC value,
+  training flags, dvfs_ver.
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

@@ -36,7 +36,7 @@ XNU, with its payload (kernel, Apple device tree, RAM disk) appended to
 | `tools/rcm-test/` | Tiny RCM payload: proves code runs without a display |
 | `xnu/patches/0001-0152`, `0900-0950` | ios-sweet / ios-topaz kernel patches |
 | `xnu/patches/0153` | Xcode 16 `iig` compatibility (`IORPC.kernelContent`) |
-| `xnu/patches/0960-0983` | Switch: machine config, early framebuffer, GICv2, secondary CPUs, Qualcomm drivers off, SD root device, SD console log, boot CPU, panic log, display, buttons, touchscreen, RTC clock, shutdown/restart, SD high speed, SD DMA, battery, perf report, fan, CPU fuse and voltage report, CPU clock (nxcpu=), root volume grow (sdgrow=), perf after the CPU raise |
+| `xnu/patches/0960-0984` | Switch: machine config, early framebuffer, GICv2, secondary CPUs, Qualcomm drivers off, SD root device, SD console log, boot CPU, panic log, display, buttons, touchscreen, RTC clock, shutdown/restart, SD high speed, SD DMA, battery, perf report, fan, CPU fuse and voltage report, CPU clock (nxcpu=), root volume grow (sdgrow=), perf after the CPU raise, DRAM table report |
 | `shim/` | the topaz phone shim (shared console code) |
 
 ## Building

@@ -1159,6 +1159,14 @@ iOS space contiguous; never move/cross the emuMMC).
   "iOS NX (CPU 1224 MHz test)" (`switchroot/ios-test/`) and "iOS NX (grow
   root)" (`switchroot/ios-grow/`) removed; hekate shows "iOS NX" and L4T.
   To go back to 998 MHz: rebuild without nxcpu, or boot bl33-0979b.
+- **Boot time at 1224 MHz (2026-11-06, `tools/nx-boottime.py`: first launchd
+  `[System Event]` -> last one before `exec SpringBoard`, 19.2 MHz ticks)**:
+  logs 13/14/16 (998 MHz) 1.93 s each; log 15 (nxcpu=1224) **1.81 s**:
+  -6% for +22% clock, so userland start is mostly not CPU-bound (SD I/O?).
+- **0983-nx-perf-after-raise (written, syntax-checked, pushed for CI)**:
+  with nxperf=1, after nx_cpu_raise succeeded: `NX PERF: again after the CPU
+  raise` + the 0978 report again (CAR PLLX, measured CPU kHz, memset/memcpy
+  MB/s), so one boot gives 998 and 1224 MHz numbers side by side.
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

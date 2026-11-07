@@ -1,0 +1,36 @@
+From 79f9329e6e5e7b232e4b7b121c077bd67d13a32a Mon Sep 17 00:00:00 2001
+From: x <x@x>
+Date: Fri, 6 Nov 2026 21:53:42 -0800
+Subject: [PATCH] nx-0983: with nxperf=1, measure the CPU clock and memory
+ bandwidth again after nxcpu= raised the clock
+
+---
+ bsd/dev/nx_input.c | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/bsd/dev/nx_input.c b/bsd/dev/nx_input.c
+index 1d76cb9..4998dd2 100644
+--- a/bsd/dev/nx_input.c
++++ b/bsd/dev/nx_input.c
+@@ -636,6 +636,7 @@ nx_battery_read(uint32_t v[8])
+ 
+ /*
+  * Boot-arg nxperf=1: log the clocks hekate left (CAR, read-only) and measure
++ * (once more after nx_cpu_raise if nxcpu= raised the clock)
+  * the CPU frequency (cycle counter over 50 ms of mach time) and memory
+  * bandwidth (memcpy/memset over 32 MiB). For deciding where speed-ups are.
+  * PMU access from EL1 is allowed: bl31 clears MDCR_EL2.TPM/TPMCR on EL2 entry.
+@@ -1299,6 +1300,10 @@ nx_input_start(void)
+ 	}
+ 	nx_fan_start();
+ 	nx_cpu_raise();
++	if (perf == 1 && cpu_raised) {
++		printf("NX PERF: again after the CPU raise\n");
++		nx_perf_report();
++	}
+ 	(void)PE_parse_boot_argn("nxkeys", &keys, sizeof(keys));
+ 	if (!keys) {
+ 		printf("NX KEYS: disabled (nxkeys=0)\n");
+-- 
+2.55.0
+

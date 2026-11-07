@@ -967,6 +967,10 @@ iOS space contiguous; never move/cross the emuMMC).
   Version" string in both builds, no UUID printed); a one-time
   `NX FAN: curve ...` line would make the next fan change identifiable.
   Battery 8% -> 7%, -425 mA on the PC port: charge before the next session.
+  - **Fixed 0979 is the main image** (2026-11-06): `switchroot/ios/bl33.bin`
+    = 1c53d51d... (`work/img-0979b-test/`, CI 42332218841); the first 0979
+    kept as `bl33-0979a.bin` (ab1e6d2e...). Fan test entry and
+    `switchroot/ios-test/` removed.
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

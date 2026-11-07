@@ -1150,6 +1150,15 @@ iOS space contiguous; never move/cross the emuMMC).
   `ios` partition (was 16 GiB with 3.5 GiB free). Later boots with
   sdgrow=1 should log "already fills the partition". To verify on the PC
   (user, sudo): `fsck.hfsplus -n /dev/sdc3`.
+- **New main image (2026-11-06): 0982 kernel with `nxcpu=1224`.**
+  `switchroot/ios/bl33.bin` = 763b8d80... (`work/img-0982-main/`: proven
+  shim + payload from CI 42341749046, main cmdline + `nxcpu=1224`, no
+  nxperf, no sdgrow). The CPU runs at 1222.4 MHz / 1243.75 mV on every
+  boot of "iOS NX" (guards and shutdown restore as in 0981). Previous main
+  (fixed 0979, 1c53d51d...) kept as `bl33-0979b.bin`. Test entries
+  "iOS NX (CPU 1224 MHz test)" (`switchroot/ios-test/`) and "iOS NX (grow
+  root)" (`switchroot/ios-grow/`) removed; hekate shows "iOS NX" and L4T.
+  To go back to 998 MHz: rebuild without nxcpu, or boot bl33-0979b.
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

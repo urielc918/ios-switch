@@ -1,0 +1,308 @@
+From a88a9fc0909988fc59e1f5b2c1a86702ec015a62 Mon Sep 17 00:00:00 2001
+From: x <x@x>
+Date: Fri, 6 Nov 2026 20:02:59 -0800
+Subject: [PATCH] nx-0981: boot-arg nxcpu=1020|1122|1224 raises PLLX and the
+ MAX77621 CPU rail to NVIDIA's L4T PLL-source voltage for this chip (1224 MHz:
+ 1243 mV), guarded by chip/fuse/rail/fan checks; restored before
+ restart/power-off
+
+---
+ bsd/dev/nx_input.c | 239 +++++++++++++++++++++++++++++++++++++++++----
+ 1 file changed, 221 insertions(+), 18 deletions(-)
+
+diff --git a/bsd/dev/nx_input.c b/bsd/dev/nx_input.c
+index cd2c005..1d955d7 100644
+--- a/bsd/dev/nx_input.c
++++ b/bsd/dev/nx_input.c
+@@ -33,6 +33,7 @@ int nx_battery_read(uint32_t v[8]);
+ void nx_sdmmc_log_final(void);          /* bsd/dev/nx_sdmmc.c */
+ 
+ #if defined(NX_SWITCH)
++static void nx_cpu_restore(void);
+ #include <sys/systm.h>
+ #include <kern/locks.h>
+ #include <kern/clock.h>
+@@ -543,6 +544,7 @@ nx_halt_restart(int restart)
+ 		}
+ 	}
+ 	printf("NX POWER: %s requested -> %s\n", restart ? "restart" : "shutdown", names[act]);
++	nx_cpu_restore();
+ 	nx_sdmmc_log_final();
+ 
+ 	if (act == NX_OFF) {
+@@ -657,23 +659,10 @@ pll_khz(uint32_t base, const uint8_t *ptab)
+ 	return (uint32_t)(38400ull * n / m / pdiv);
+ }
+ 
+-static void
+-nx_perf_report(void)
++/* CPU clock: PMU cycle counter against 50 ms of mach time, interrupts off. */
++static uint64_t
++cpu_khz_measure(uint64_t *cycles, uint64_t *us)
+ {
+-	static const uint8_t pllx_p[15] = { 1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 12, 16, 20, 24, 32 };
+-	vm_offset_t car = ml_io_map(CAR_PA_BAT, 0x1000);
+-	if (car != 0) {
+-		uint32_t x = rd32(car + CAR_PLLX_BASE), mm = rd32(car + CAR_PLLM_BASE);
+-		uint32_t mb = rd32(car + CAR_PLLMB_BASE), c = rd32(car + CAR_PLLC_BASE);
+-		uint32_t burst = rd32(car + CAR_CCLK_BURST), emc = rd32(car + CAR_CLK_SOURCE_EMC);
+-		printf("NX PERF: PLLX %#x = %u kHz, CCLK burst %#x\n", x, pll_khz(x, pllx_p), burst);
+-		printf("NX PERF: PLLM %#x (~%u kHz), PLLMB %#x (~%u kHz), PLLC %#x (~%u kHz)\n",
+-		    mm, pll_khz(mm, NULL), mb, pll_khz(mb, NULL), c, pll_khz(c, NULL));
+-		printf("NX PERF: CLK_SOURCE_EMC %#x: source %u, divider %u.%u\n",
+-		    emc, emc >> 29, 1 + (emc & 0xFFu) / 2, (emc & 1u) ? 5 : 0);
+-	}
+-
+-	/* CPU clock: PMU cycle counter against mach time (24-bit+ timer, exact). */
+ 	uint64_t pmcr;
+ 	__asm__ volatile ("mrs %0, PMCR_EL0" : "=r"(pmcr));
+ 	__asm__ volatile ("msr PMCR_EL0, %0" :: "r"((pmcr | 1u) & ~(1ull << 3))); /* E on, D off (count every cycle) */
+@@ -690,8 +679,30 @@ nx_perf_report(void)
+ 	__asm__ volatile ("mrs %0, PMCCNTR_EL0" : "=r"(c1));
+ 	ml_set_interrupts_enabled(istate);
+ 	absolutetime_to_nanoseconds(t1 - t0, &ns);
+-	printf("NX PERF: CPU %llu kHz (%llu cycles in %llu us, cpu %d)\n",
+-	    ns ? (c1 - c0) * 1000000ull / ns : 0, c1 - c0, ns / 1000, cpu_number());
++	*cycles = c1 - c0;
++	*us = ns / 1000;
++	return ns ? (c1 - c0) * 1000000ull / ns : 0;
++}
++
++static void
++nx_perf_report(void)
++{
++	static const uint8_t pllx_p[15] = { 1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 12, 16, 20, 24, 32 };
++	vm_offset_t car = ml_io_map(CAR_PA_BAT, 0x1000);
++	if (car != 0) {
++		uint32_t x = rd32(car + CAR_PLLX_BASE), mm = rd32(car + CAR_PLLM_BASE);
++		uint32_t mb = rd32(car + CAR_PLLMB_BASE), c = rd32(car + CAR_PLLC_BASE);
++		uint32_t burst = rd32(car + CAR_CCLK_BURST), emc = rd32(car + CAR_CLK_SOURCE_EMC);
++		printf("NX PERF: PLLX %#x = %u kHz, CCLK burst %#x\n", x, pll_khz(x, pllx_p), burst);
++		printf("NX PERF: PLLM %#x (~%u kHz), PLLMB %#x (~%u kHz), PLLC %#x (~%u kHz)\n",
++		    mm, pll_khz(mm, NULL), mb, pll_khz(mb, NULL), c, pll_khz(c, NULL));
++		printf("NX PERF: CLK_SOURCE_EMC %#x: source %u, divider %u.%u\n",
++		    emc, emc >> 29, 1 + (emc & 0xFFu) / 2, (emc & 1u) ? 5 : 0);
++	}
++
++	uint64_t cycles, us;
++	uint64_t khz = cpu_khz_measure(&cycles, &us);
++	printf("NX PERF: CPU %llu kHz (%llu cycles in %llu us, cpu %d)\n", khz, cycles, us, cpu_number());
+ 
+ 	/* Memory bandwidth: 32 MiB, memset then memcpy 16 -> 16 MiB, 4 rounds each. */
+ 	const size_t sz = 32u << 20, half = sz / 2;
+@@ -804,6 +815,196 @@ nx_cpu_report(void)
+ 	}
+ }
+ 
++/*
++ * Boot-arg nxcpu=1020|1122|1224 (MHz): raise the CPU clock (PLLX) and the
++ * MAX77621 CPU rail. Off by default.
++ * Voltages: NVIDIA's PLL-source table for this chip (CTCaer switch-l4t-kernel
++ * drivers/soc/tegra/tegra210-dvfs.c CPU_PLL_CVB_TABLE_ODN, + CVB_PLL_MARGIN
++ * 30 %, capped at 1257 mV), the highest of the three speedo-revision
++ * readings of this unit's fuses (tools/nx-cpu-vf.py), rounded up to the
++ * MAX77621 grid: 1020 MHz 1118 mV, 1122 MHz 1181 mV, 1224 MHz 1243 mV.
++ * Only for the chip they were worked out for: T210 (HIDREV major 1), SKU
++ * 0x83, CPU speedo 0 below 2119 (process 0), MAX77621 at hekate's 950 mV,
++ * and only with the fan thread running.
++ * PLLX: hekate's M 2 N 156 P /3 has the VCO at 2995 MHz (max 3000), so the
++ * N-only dynamic ramp can't go faster; M 3 (12.8 MHz), P /2 (hw 1), VCO
++ * 2035-2445 MHz (Linux clk-tegra210.c pll_x_params: 1350-3000 MHz, cf
++ * 12-38.4 MHz): N 159/175/191 -> 1017.6/1120.0/1222.4 MHz.
++ * Sequence (as Linux clk-tegra-super-cclk.c + hekate clock_enable_pllx):
++ * voltage up (VOUT, then VOUT_DVS, as hekate; 1 ms for the 12.5 mV/us ramp,
++ * read back), interrupts off, CCLK burst policy -> PLLP (source 4), PLLX
++ * disable, new M/N/P, bypass/lock-enable/enable, wait for LOCK (bit 27, up
++ * to 1 ms), CCLK back to PLLX_OUT0_LJ (8). Lock timeout: back to hekate's
++ * PLLX setting and voltage. Before a restart/shutdown (nx_halt_restart)
++ * the CPU goes back to PLLP and 950 mV.
++ */
++#define CAR_PLLX_MISC           0x0E4u
++#define  PLLX_MISC_LOCK_EN      (1u << 18)
++#define  PLL_BASE_BYPASS        (1u << 31)
++#define  PLL_BASE_ENABLE        (1u << 30)
++#define  PLL_BASE_LOCK          (1u << 27)
++#define CCLK_BURST_PLLP         0x20004444u
++#define CCLK_BURST_PLLX         0x20008888u
++#define MAX77621_N(reg)         ((reg) & 0x7Fu)
++#define MAX77621_UV(n)          (606250u + (n) * 6250u)
++#define MAX77621_N_HEKATE       55u             /* 950000 uV */
++#define MAX77621_N_LIMIT        104u            /* 1256250 uV: L4T's "OC max" 1257 mV */
++#define FUSE_CPU_SPEEDO_0       0x114u
++#define FUSE_SKU_INFO_OFF       0x110u
++
++static const struct {
++	uint32_t mhz, m, n, vn;
++} nx_cpu_steps[] = {
++	{ 1020, 3, 159, 82 },   /* 1017.6 MHz, 1118750 uV */
++	{ 1122, 3, 175, 92 },   /* 1120.0 MHz, 1181250 uV */
++	{ 1224, 3, 191, 102 },  /* 1222.4 MHz, 1243750 uV */
++};
++
++static vm_offset_t cpu_car;
++static uint32_t cpu_pllx_saved;
++static uint8_t cpu_vout_saved, cpu_dvs_saved;
++static bool cpu_raised, fan_running;
++
++static int
++cpu_vout_set(uint8_t vout, uint8_t dvs)
++{
++	uint8_t w0[2] = { 0x00, vout }, w1[2] = { 0x01, dvs }, r0 = 0, r1 = 0;
++	if (MAX77621_N(vout) > MAX77621_N_LIMIT || MAX77621_N(dvs) > MAX77621_N_LIMIT) {
++		return EINVAL;
++	}
++	int error = nx_i2c_xfer(5, CPU_PMIC_ADDR, w0, 2, NULL, 0);
++	if (!error) {
++		error = nx_i2c_xfer(5, CPU_PMIC_ADDR, w1, 2, NULL, 0);
++	}
++	delay(1000);
++	if (!error) {
++		error = i2c5_reg(CPU_PMIC_ADDR, 0x00, &r0) || i2c5_reg(CPU_PMIC_ADDR, 0x01, &r1) ? EIO : 0;
++	}
++	if (!error && (r0 != vout || r1 != dvs)) {
++		error = EIO;
++	}
++	return error;
++}
++
++/* Interrupts off; returns true once PLLX is locked with the new setting. */
++static bool
++cpu_pllx_program(uint32_t base)
++{
++	wr32(cpu_car + CAR_CCLK_BURST, CCLK_BURST_PLLP);
++	(void)rd32(cpu_car + CAR_CCLK_BURST);
++	delay(2);
++	wr32(cpu_car + CAR_PLLX_BASE, rd32(cpu_car + CAR_PLLX_BASE) & ~PLL_BASE_ENABLE);
++	delay(2);
++	wr32(cpu_car + CAR_PLLX_BASE, PLL_BASE_BYPASS | base);
++	wr32(cpu_car + CAR_PLLX_BASE, base);
++	wr32(cpu_car + CAR_PLLX_MISC, rd32(cpu_car + CAR_PLLX_MISC) | PLLX_MISC_LOCK_EN);
++	wr32(cpu_car + CAR_PLLX_BASE, PLL_BASE_ENABLE | base);
++	for (int i = 0; i < 1000; i++) {
++		if (rd32(cpu_car + CAR_PLLX_BASE) & PLL_BASE_LOCK) {
++			delay(50);              /* Linux PLL_POST_LOCK_DELAY */
++			wr32(cpu_car + CAR_CCLK_BURST, CCLK_BURST_PLLX);
++			(void)rd32(cpu_car + CAR_CCLK_BURST);
++			return true;
++		}
++		delay(1);
++	}
++	return false;                           /* CCLK stays on PLLP */
++}
++
++static void
++nx_cpu_raise(void)
++{
++	uint32_t mhz = 0;
++	if (!PE_parse_boot_argn("nxcpu", &mhz, sizeof(mhz)) || mhz == 0) {
++		return;
++	}
++	unsigned s;
++	for (s = 0; s < sizeof(nx_cpu_steps) / sizeof(nx_cpu_steps[0]); s++) {
++		if (nx_cpu_steps[s].mhz == mhz) {
++			break;
++		}
++	}
++	if (s == sizeof(nx_cpu_steps) / sizeof(nx_cpu_steps[0])) {
++		printf("NX CPU: nxcpu=%u not supported (1020, 1122, 1224)\n", mhz);
++		return;
++	}
++	if (!fan_running) {
++		printf("NX CPU: fan control not running, CPU clock left alone\n");
++		return;
++	}
++	cpu_car = ml_io_map(CAR_PA_BAT, 0x1000);
++	vm_offset_t fuse = ml_io_map(FUSE_PA, 0x1000);
++	vm_offset_t misc = ml_io_map(APB_MISC_PA, 0x1000);
++	if (!cpu_car || !fuse || !misc) {
++		printf("NX CPU: MMIO mapping failed\n");
++		return;
++	}
++	uint32_t hid = rd32(misc + APB_MISC_GP_HIDREV);
++	uint32_t enb = rd32(cpu_car + CAR_CLK_OUT_ENB_H), rst = rd32(cpu_car + CAR_RST_DEVICES_H);
++	uint32_t mce = rd32(cpu_car + CAR_MISC_CLK_ENB);
++	bool fuses_ok = (enb & CAR_H_FUSE) && !(rst & CAR_H_FUSE) && (mce & CAR_MISC_FUSE_VISIBLE);
++	uint32_t sku = fuses_ok ? rd32(fuse + FUSE_REG(FUSE_SKU_INFO_OFF)) : 0;
++	uint32_t speedo = fuses_ok ? rd32(fuse + FUSE_REG(FUSE_CPU_SPEEDO_0)) : 0;
++	uint32_t pllx = rd32(cpu_car + CAR_PLLX_BASE), burst = rd32(cpu_car + CAR_CCLK_BURST);
++	uint8_t vout = 0, dvs = 0;
++	int error = i2c5_reg(CPU_PMIC_ADDR, 0x00, &vout) || i2c5_reg(CPU_PMIC_ADDR, 0x01, &dvs) ? EIO : 0;
++	if (((hid >> 4) & 0xFu) != 1 || sku != 0x83 || speedo == 0 || speedo >= 2119 || error ||
++	    vout != (0x80u | MAX77621_N_HEKATE) || dvs != (0x80u | MAX77621_N_HEKATE) ||
++	    burst != CCLK_BURST_PLLX || !(pllx & PLL_BASE_ENABLE)) {
++		printf("NX CPU: not the expected chip/state (HIDREV %#x, SKU %#x, speedo %u, VOUT %#x/%#x err %d, "
++		    "burst %#x, PLLX %#x), CPU clock left alone\n", hid, sku, speedo, vout, dvs, error, burst, pllx);
++		return;
++	}
++
++	uint8_t vn = (uint8_t)(0x80u | nx_cpu_steps[s].vn);
++	error = cpu_vout_set(vn, vn);
++	if (error) {
++		printf("NX CPU: setting %u uV failed (err %d), back to %u uV\n",
++		    MAX77621_UV(nx_cpu_steps[s].vn), error, MAX77621_UV(MAX77621_N_HEKATE));
++		(void)cpu_vout_set(vout, dvs);
++		return;
++	}
++	cpu_pllx_saved = pllx & ~(PLL_BASE_ENABLE | PLL_BASE_LOCK | PLL_BASE_BYPASS);
++	cpu_vout_saved = vout;
++	cpu_dvs_saved = dvs;
++	uint32_t base = (1u << 20) | (nx_cpu_steps[s].n << 8) | nx_cpu_steps[s].m;
++	boolean_t istate = ml_set_interrupts_enabled(FALSE);
++	bool locked = cpu_pllx_program(base);
++	if (!locked) {
++		(void)cpu_pllx_program(cpu_pllx_saved);
++	}
++	ml_set_interrupts_enabled(istate);
++	if (!locked) {
++		error = cpu_vout_set(vout, dvs);
++		printf("NX CPU: PLLX did not lock at M %u N %u, back to hekate's PLLX %#x (burst %#x), %u uV (err %d)\n",
++		    nx_cpu_steps[s].m, nx_cpu_steps[s].n, rd32(cpu_car + CAR_PLLX_BASE),
++		    rd32(cpu_car + CAR_CCLK_BURST), MAX77621_UV(MAX77621_N_HEKATE), error);
++		return;
++	}
++	cpu_raised = true;
++	uint64_t cycles, us;
++	uint64_t khz = cpu_khz_measure(&cycles, &us);
++	printf("NX CPU: PLLX %#x, burst %#x, CPU %llu kHz measured, rail %u uV (nxcpu=%u)\n",
++	    rd32(cpu_car + CAR_PLLX_BASE), rd32(cpu_car + CAR_CCLK_BURST), khz,
++	    MAX77621_UV(nx_cpu_steps[s].vn), mhz);
++}
++
++/* Before a restart/power-off: CPU back on PLLP (408 MHz), rail back to hekate's 950 mV. */
++static void
++nx_cpu_restore(void)
++{
++	if (!cpu_raised) {
++		return;
++	}
++	cpu_raised = false;
++	boolean_t istate = ml_set_interrupts_enabled(FALSE);
++	wr32(cpu_car + CAR_CCLK_BURST, CCLK_BURST_PLLP);
++	(void)rd32(cpu_car + CAR_CCLK_BURST);
++	ml_set_interrupts_enabled(istate);
++	int error = cpu_vout_set(cpu_vout_saved, cpu_dvs_saved);
++	printf("NX CPU: CPU on PLLP, rail back to %u uV (err %d)\n", MAX77621_UV(MAX77621_N(cpu_vout_saved)), error);
++}
++
+ /*
+  * Fan and temperature (boot-arg nxfan=0 leaves both alone), as hekate's
+  * bdk/thermal/fan.c, tmp451.c and power/regulator_5v.c (Erista):
+@@ -1045,6 +1246,7 @@ nx_fan_start(void)
+ 	fan_5v_on = false;
+ 	if (kernel_thread_start(fan_thread, NULL, &thread) == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
++		fan_running = true;
+ 	}
+ }
+ 
+@@ -1072,6 +1274,7 @@ nx_input_start(void)
+ 		return;
+ 	}
+ 	nx_fan_start();
++	nx_cpu_raise();
+ 	(void)PE_parse_boot_argn("nxkeys", &keys, sizeof(keys));
+ 	if (!keys) {
+ 		printf("NX KEYS: disabled (nxkeys=0)\n");
+-- 
+2.55.0
+

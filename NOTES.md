@@ -1035,6 +1035,29 @@ iOS space contiguous; never move/cross the emuMMC).
     up to 1785 MHz at <= 1225 mV, lower V at every step; the tables give
     its tune0/tune1 values); (C) PLLX at DFLL voltage + a margin: no
     source sanctions it, only stability risk (voltages stay <= 1227 mV).
+- **0981-nx-cpu-clock (option A; written, syntax-checked, pushed for CI)**:
+  boot-arg `nxcpu=1020|1122|1224` (off by default). PLLX M 3 / P /2 (hw 1)
+  / N 159, 175, 191 = 1017.6 / 1120.0 / 1222.4 MHz (VCO 2035-2445, Linux
+  pll_x_params 1350-3000 MHz, cf 12.8 >= 12); hekate's M 2 N 156 P /3 has
+  the VCO at 2995, so Linux's N-only dynamic ramp can't be used. Rail
+  (max over the 3 speedo-revision cases, MAX77621 grid): 1118750 /
+  1181250 / **1243750 uV** (n 82/92/102); runtime cap n <= 104 (1256.25
+  mV). Guards: fan thread running, HIDREV major 1, SKU 0x83, CPU speedo 0 in
+  1..2118, VOUT and VOUT_DVS both 0xb7, burst 0x20008888, PLLX enabled;
+  otherwise `NX CPU: not the expected chip/state ...`. Sequence: VOUT then
+  VOUT_DVS (hekate order), 1 ms, read back; interrupts off; CCLK burst ->
+  0x20004444 (PLLP, Linux clk-tegra-super-cclk.c PLLP_INDEX 4), PLLX
+  disable / bypass+div / div / MISC 0xE4 bit 18 lock-enable / enable, poll
+  LOCK bit 27 <= 1 ms, 50 us, burst back to 0x20008888. No lock -> hekate's
+  PLLX value + 950 mV again. `nx_halt_restart` first calls nx_cpu_restore
+  (CCLK -> PLLP, rail -> saved 950 mV), so a restart into hekate starts at
+  hekate's voltage. Log: `NX CPU: PLLX ..., CPU N kHz measured, rail N uV`.
+  Panic path unchanged (stays raised until power-off). The PMU cycle
+  measurement is now `cpu_khz_measure()` (0978 lines unchanged).
+  Local check: xnu-cc.py on `work/bt-0979` (now base/pre0979/0979 fixed/
+  0980/0981) with -Werror= for unused, sign-compare, shorten-64-to-32,
+  implicit-int-conversion, uninitialized, format, shadow, etc.: 0 errors
+  (an injected unused variable is caught). CI itself has no -Werror.
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

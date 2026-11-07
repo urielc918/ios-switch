@@ -1167,6 +1167,10 @@ iOS space contiguous; never move/cross the emuMMC).
   with nxperf=1, after nx_cpu_raise succeeded: `NX PERF: again after the CPU
   raise` + the 0978 report again (CAR PLLX, measured CPU kHz, memset/memcpy
   MB/s), so one boot gives 998 and 1224 MHz numbers side by side.
+  CI run 42344627143: success, 230 applied, same error lines; kernel
+  `work/ci-42344627143/`. Test image `work/img-0983-test/bl33.bin` (main
+  cmdline + `nxperf=1 nxcpu=1224`) on the card as "iOS NX (perf test)"
+  (`switchroot/ios-test/`); main stays the 0982 nxcpu=1224 image.
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

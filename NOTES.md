@@ -1171,6 +1171,17 @@ iOS space contiguous; never move/cross the emuMMC).
   `work/ci-42344627143/`. Test image `work/img-0983-test/bl33.bin` (main
   cmdline + `nxperf=1 nxcpu=1224`) on the card as "iOS NX (perf test)"
   (`switchroot/ios-test/`); main stays the 0982 nxcpu=1224 image.
+- **0983 on hardware (log `logs/ioslog-17.bin/.txt`)**, same boot, single
+  core, 32 MiB buffers, EMC 800 MHz both times:
+  998.4 MHz: memset 2322 MB/s, memcpy 1454 MB/s;
+  1222.4 MHz (CPU 1222401 kHz measured): memset 2456 (+5.8%), memcpy
+  1518 (+4.4%) for +22.4% clock. Userland start 1.81 s (as log 15).
+  So single-core copy bandwidth is set by the memory side (latency / few
+  outstanding misses at EMC 800 MHz), not the CPU clock: ~3 GB/s of
+  read+write traffic vs LPDDR4 x64 @1600 MT/s ~12.8 GB/s peak. Next lever
+  for memory-heavy work (CPU rendering): DRAM 1600 MHz (PLLMB is already
+  trained to 1600 by hekate); DFLL only for compute-bound work. Multi-core
+  bandwidth not measured yet.
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

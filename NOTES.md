@@ -953,6 +953,11 @@ iOS space contiguous; never move/cross the emuMMC).
   unchanged. Host simulation of the loop (`work/fancurve-test/t.c`) and
   `xnu-cc.py` on the CI 42328495373 buildtree (`work/bt-0979`): 0 errors;
   the new patch applies to the pre-0979 nx_input.c.
+  CI run 42332218841: success, same skipped-patch/tool error lines as
+  42328495373; kernel `work/ci-42332218841/` (SHA256SUMS OK). Test image
+  `work/img-0979b-test/bl33.bin` (1c53d51d..., proven shim + payload, main
+  cmdline) on the card as "iOS NX (fan test)" (`switchroot/ios-test/`,
+  `ios-nx-test.ini`); main stays 0979 (ab1e6d2e...). Not yet booted.
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

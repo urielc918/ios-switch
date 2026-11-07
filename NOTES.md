@@ -1010,6 +1010,31 @@ iOS space contiguous; never move/cross the emuMMC).
   speedo-tegra210.c) and CPU CVB tables (drivers/clk/tegra/
   clk-tegra124-dfll-fcpu.c) and work out speedo/process id and the
   voltage per PLLX frequency for these values, then 0981.
+- **CPU V/F for this unit (2026-11-06, from kernel sources; `tools/nx-cpu-vf.py`)**:
+  sources in `work/linux/` (mainline master d48723711bae:
+  drivers/soc/tegra/fuse/speedo-tegra210.c, drivers/clk/tegra/
+  clk-tegra124-dfll-fcpu.c, cvb.c) and `work/l4t-kernel/` (CTCaer
+  switch-l4t-kernel-4.9 linux-dev 2d0059fd3167: drivers/soc/tegra/
+  tegra210-dvfs.c, cvb.c, fuse/speedo-tegra210.c; same speedo logic).
+  - Linux fuse offsets are relative to 0x7000F800 + 0x100 (FUSE_BEGIN), so
+    they equal hekate's/0980's. Speedo revision = spare bits 2-4 (hekate
+    offsets 0x388/0x38C/0x390, not read yet). For any revision the CPU
+    speedo value is 1988-2100 (< 2119) -> **cpu process id 0**; SKU 0x83 +
+    A02 -> **cpu speedo id 3** -> the **ODN** (Odin) tables.
+  - Mainline DFLL table (closed loop, 825-1227 mV, speedo-independent):
+    1020 987, 1224 1056, 1326 1087, 1428 1118, 1581 1131, 1683 1168,
+    1785 1225 mV (MHz -> mV, rounded up to the MAX77621 6.25 mV grid).
+  - L4T PLL table (open loop, what a fixed PLLX needs): CVB x 1.3
+    (CVB_PLL_MARGIN 30), min 950, max 1257 mV ("OC max"). Speedo 1993:
+    1020 1112, 1122 1181, **1224 1243**, 1326 1318 (> max). So NVIDIA's
+    policy caps PLLX at **1224 MHz / 1243 mV** for this chip; faster needs
+    the DFLL. (hekate runs PLLX 998 MHz at 950 mV, below even the DFLL line
+    interpolated at 998 (~972 mV), and it is stable.)
+  - Options for 0981: (A) PLLX 1224 MHz at 1243 mV, as L4T allows (+23%
+    clock, ~2x CPU power: V^2 f); (B) a DFLL driver like Linux (closed loop,
+    up to 1785 MHz at <= 1225 mV, lower V at every step; the tables give
+    its tune0/tune1 values); (C) PLLX at DFLL voltage + a margin: no
+    source sanctions it, only stability risk (voltages stay <= 1227 mV).
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

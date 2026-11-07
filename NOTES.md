@@ -1141,6 +1141,15 @@ iOS space contiguous; never move/cross the emuMMC).
   **second** test entry "iOS NX (grow root)" (`switchroot/ios-grow/`,
   `bootloader/ini/ios-nx-grow.ini`); the CPU 1224 MHz test in
   `switchroot/ios-test/` and the fixed-0979 main are unchanged.
+- **0982 on hardware (log `logs/ioslog-16.bin/.txt`, "iOS NX (grow root)",
+  boot-args ... sdgrow=1): works.** `NX SD: grow: HFS volume 16384 MiB ->
+  136176 MiB (partition 278888448 blocks of 512)`, then `resize returned 0;
+  volume now 136176 MiB, 123387 MiB free` (~80 log lines after the root
+  mount, during early userland). No HFS/journal/SD errors, no panic; clean
+  unmount and volume-up restart to hekate. The root volume now fills the
+  `ios` partition (was 16 GiB with 3.5 GiB free). Later boots with
+  sdgrow=1 should log "already fills the partition". To verify on the PC
+  (user, sudo): `fsck.hfsplus -n /dev/sdc3`.
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

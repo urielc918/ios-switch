@@ -1083,6 +1083,11 @@ iOS space contiguous; never move/cross the emuMMC).
   whether the rail step worked. Note: CAR 0x020 (CCLK_BURST_POLICY, hekate)
   vs Linux's 0x368 (CCLKG_BURST_POLICY): kept 0x020, which hekate uses to
   put the G cluster on PLLX.
+  CI run 42338053676: success, 228 applied, same error lines; kernel
+  `work/ci-42338053676/`. Test image `work/img-0981b-test/bl33.bin`
+  (58dada52..., same cmdline as the first: nxperf=1 nxcpu=1224) replaced
+  the frozen first 0981 build (8a2a9067) in `switchroot/ios-test/`, entry
+  "iOS NX (CPU 1224 MHz test)". Main stays the fixed 0979.
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

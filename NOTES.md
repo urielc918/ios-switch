@@ -1088,6 +1088,18 @@ iOS space contiguous; never move/cross the emuMMC).
   (58dada52..., same cmdline as the first: nxperf=1 nxcpu=1224) replaced
   the frozen first 0981 build (8a2a9067) in `switchroot/ios-test/`, entry
   "iOS NX (CPU 1224 MHz test)". Main stays the fixed 0979.
+- **Fixed 0981 on hardware (log `logs/ioslog-15.bin/.txt`, dumped 20:42,
+  boot-args nxperf=1 nxcpu=1224): works.** `NX CPU: rail at 1243750 uV,
+  moving the CPU to PLLP (CLK_OUT_ENB_Y 0x342)` (bit 31 clear before, as
+  hekate leaves it: the first build's freeze), `NX CPU: PLLX 0x4810bf03,
+  burst 0x20008888, CPU 1222400 kHz measured, rail 1243750 uV`. Boot to
+  SpringBoard normal, no panic. Fan: SoC up to 45.43 C (vs ~42 at 998
+  MHz), duty 51 throughout (47 C step still not reached). Volume-up
+  shutdown: `NX POWER: shutdown requested -> restart to hekate`, then
+  `NX CPU: CPU on PLLP, rail back to 950000 uV (err 0)`. Battery 17%,
+  +10 mA (PC port). Also in this (pre-fsck) boot: repeated `hfs: set
+  hardlink bit on vol=iOSRoot cnid=318777 inoid=336964415` (HFS fixing a
+  Linux-made hard link; cf. the fsck hard-link finding).
 - **iOS shows 16 GB (2026-11-06)**: the root HFS+ was built as the 16 GiB
   image and dd'd into the 132 GiB `ios` partition (sdc3); the filesystem was
   never grown. Linux hfsprogs can't grow HFS+; the kernel's HFS

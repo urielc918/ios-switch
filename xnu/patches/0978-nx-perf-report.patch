@@ -1,0 +1,120 @@
+From 91e281668bac6b35f8c23d47db9bc782590d4f14 Mon Sep 17 00:00:00 2001
+From: x <x@x>
+Date: Fri, 6 Nov 2026 16:09:51 -0800
+Subject: [PATCH] nx-0978: boot-arg nxperf=1 logs the CAR clocks (PLLX,
+ PLLM/MB, EMC source), the measured CPU clock and memory bandwidth
+
+---
+ bsd/dev/nx_input.c | 89 ++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 89 insertions(+)
+
+diff --git a/bsd/dev/nx_input.c b/bsd/dev/nx_input.c
+index 162f415..30f7eab 100644
+--- a/bsd/dev/nx_input.c
++++ b/bsd/dev/nx_input.c
+@@ -632,6 +632,91 @@ nx_battery_read(uint32_t v[8])
+ 	return 0;
+ }
+ 
++/*
++ * Boot-arg nxperf=1: log the clocks hekate left (CAR, read-only) and measure
++ * the CPU frequency (cycle counter over 50 ms of mach time) and memory
++ * bandwidth (memcpy/memset over 32 MiB). For deciding where speed-ups are.
++ * PMU access from EL1 is allowed: bl31 clears MDCR_EL2.TPM/TPMCR on EL2 entry.
++ * PLLs: f = 38.4 MHz / M * N / P; PLLX P is a table index (hekate: 2 -> /3).
++ */
++#define CAR_PLLX_BASE           0x0E0u
++#define CAR_PLLM_BASE           0x090u
++#define CAR_PLLMB_BASE          0x5E8u
++#define CAR_PLLC_BASE           0x080u
++#define CAR_CCLK_BURST          0x020u
++#define CAR_CLK_SOURCE_EMC      0x19Cu
++
++static uint32_t
++pll_khz(uint32_t base, const uint8_t *ptab)
++{
++	uint32_t m = base & 0xFFu, n = (base >> 8) & 0xFFu, p = (base >> 20) & 0x1Fu;
++	if (!(base & (1u << 30)) || m == 0) {
++		return 0;                       /* disabled */
++	}
++	uint32_t pdiv = ptab ? (p < 15 ? ptab[p] : 1) : (p + 1);
++	return (uint32_t)(38400ull * n / m / pdiv);
++}
++
++static void
++nx_perf_report(void)
++{
++	static const uint8_t pllx_p[15] = { 1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 12, 16, 20, 24, 32 };
++	vm_offset_t car = ml_io_map(CAR_PA_BAT, 0x1000);
++	if (car != 0) {
++		uint32_t x = rd32(car + CAR_PLLX_BASE), mm = rd32(car + CAR_PLLM_BASE);
++		uint32_t mb = rd32(car + CAR_PLLMB_BASE), c = rd32(car + CAR_PLLC_BASE);
++		uint32_t burst = rd32(car + CAR_CCLK_BURST), emc = rd32(car + CAR_CLK_SOURCE_EMC);
++		printf("NX PERF: PLLX %#x = %u kHz, CCLK burst %#x\n", x, pll_khz(x, pllx_p), burst);
++		printf("NX PERF: PLLM %#x (~%u kHz), PLLMB %#x (~%u kHz), PLLC %#x (~%u kHz)\n",
++		    mm, pll_khz(mm, NULL), mb, pll_khz(mb, NULL), c, pll_khz(c, NULL));
++		printf("NX PERF: CLK_SOURCE_EMC %#x: source %u, divider %u.%u\n",
++		    emc, emc >> 29, 1 + (emc & 0xFFu) / 2, (emc & 1u) ? 5 : 0);
++	}
++
++	/* CPU clock: PMU cycle counter against mach time (24-bit+ timer, exact). */
++	uint64_t pmcr;
++	__asm__ volatile ("mrs %0, PMCR_EL0" : "=r"(pmcr));
++	__asm__ volatile ("msr PMCR_EL0, %0" :: "r"((pmcr | 1u) & ~(1ull << 3))); /* E on, D off (count every cycle) */
++	__asm__ volatile ("msr PMCNTENSET_EL0, %0" :: "r"(1ull << 31));        /* cycle counter */
++	__asm__ volatile ("isb");
++	boolean_t istate = ml_set_interrupts_enabled(FALSE);
++	uint64_t c0, c1, t0 = mach_absolute_time(), t1, ns;
++	__asm__ volatile ("mrs %0, PMCCNTR_EL0" : "=r"(c0));
++	uint64_t want;
++	nanoseconds_to_absolutetime(50 * NSEC_PER_MSEC, &want);
++	do {
++		t1 = mach_absolute_time();
++	} while (t1 - t0 < want);
++	__asm__ volatile ("mrs %0, PMCCNTR_EL0" : "=r"(c1));
++	ml_set_interrupts_enabled(istate);
++	absolutetime_to_nanoseconds(t1 - t0, &ns);
++	printf("NX PERF: CPU %llu kHz (%llu cycles in %llu us, cpu %d)\n",
++	    ns ? (c1 - c0) * 1000000ull / ns : 0, c1 - c0, ns / 1000, cpu_number());
++
++	/* Memory bandwidth: 32 MiB, memset then memcpy 16 -> 16 MiB, 4 rounds each. */
++	const size_t sz = 32u << 20, half = sz / 2;
++	uint8_t *buf = (uint8_t *)kalloc_data(sz, Z_WAITOK);
++	if (buf == NULL) {
++		printf("NX PERF: no 32 MiB buffer\n");
++		return;
++	}
++	memset(buf, 1, sz);
++	uint64_t a = mach_absolute_time();
++	for (int i = 0; i < 4; i++) {
++		memset(buf, i, sz);
++	}
++	uint64_t b = mach_absolute_time();
++	for (int i = 0; i < 4; i++) {
++		memcpy(buf + (i & 1 ? 0 : half), buf + (i & 1 ? half : 0), half);
++	}
++	uint64_t e = mach_absolute_time(), nset, ncpy;
++	absolutetime_to_nanoseconds(b - a, &nset);
++	absolutetime_to_nanoseconds(e - b, &ncpy);
++	kfree_data(buf, sz);
++	printf("NX PERF: memset %llu MB/s, memcpy %llu MB/s (copied bytes; read+write = 2x)\n",
++	    nset ? 4ull * sz * 1000 / nset : 0, ncpy ? 4ull * half * 1000 / ncpy : 0);
++}
++
+ /* Called once from IOFindBSDRoot (iokit/bsddev/IOKitBSDInit.cpp). */
+ void
+ nx_input_start(void)
+@@ -644,6 +729,10 @@ nx_input_start(void)
+ 		return;
+ 	}
+ 	started = true;
++	uint32_t perf = 0;
++	if (PE_parse_boot_argn("nxperf", &perf, sizeof(perf)) && perf == 1) {
++		nx_perf_report();
++	}
+ 	gpio_base = ml_io_map(GPIO_PA, 0x1000);
+ 	i2c_base = ml_io_map(I2C_PA, 0x2000);
+ 	if (gpio_base == 0 || i2c_base == 0) {
+-- 
+2.56.0
+

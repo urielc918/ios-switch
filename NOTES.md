@@ -855,6 +855,24 @@ iOS space contiguous; never move/cross the emuMMC).
   - **0977 is the main image**: `switchroot/ios/bl33.bin` = bf3f552d...
     (`work/img-0977b-test/`, main cmdline); previous main kept as
     `bl33-0976.bin` (f2d74797...). Battery test entry removed.
+- **Performance: what hekate leaves (from its source, to be measured)**:
+  - CPU: `clock_enable_pllx()` (bdk/soc/clock.c) = PLLX M 2, N 156, P idx 2
+    (/3) = **998.4 MHz**, CCLK burst 0x20008888 (PLLX_OUT0_LJ); nothing in
+    XNU raises it (Linux does via DFLL/cpufreq). Erista A57 max ~1785 MHz,
+    needs the MAX77621 CPU rail (I2C5 0x1B) raised per speedo/CVB.
+  - DRAM: L4T launcher `minerva_prep_boot_l4t()` trains 204/408/800/1333+
+    and leaves **800 MHz**; hw_deinit's `minerva_deinit()` (-> 204 MHz)
+    likely does nothing then (`init_done = 0`). 1600 MHz needs the EMC clock
+    change sequence (Linux tegra210-emc; table from bl31 SMC 0xC2FFFE01).
+  - No GPU: iOS draws on the CPU, so CPU clock and memory bandwidth both
+    matter. Raising clocks also needs fan control (none yet).
+- **0978-nx-perf-report (written, syntax-checked, pushed for CI)**: boot-arg
+  `nxperf=1` -> `NX PERF:` lines from nx_input_start: CAR PLLX (+ computed
+  kHz), PLLM/PLLMB/PLLC raw (+ rough kHz), CCLK burst, CLK_SOURCE_EMC
+  (source, divider); CPU clock = PMCCNTR_EL0 cycles over 50 ms of mach time
+  with interrupts off (PMCR.E on, D off; MDCR_EL2.TPM/TPMCR are cleared by
+  bl31 context_mgmt.c, so EL1 may use the PMU); memset/memcpy MB/s over
+  32 MiB (4 rounds). Read-only.
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

@@ -11,7 +11,8 @@ commit. The original READMEs and notes are in `docs/upstream/`.
 Switch: Apple's launchd starts the iOS daemons from an HFS+ root on the SD
 card, on all four CPU cores, and SpringBoard reaches the **lock screen** on
 the Switch's panel (CPU-drawn, no GPU), operated with the **touchscreen
-and the buttons** (power, volume; volume up + down = Home). The boot shim passes every
+and the buttons** (power, volume; volume up + down = Home), apps open, and
+the battery level, clock, shutdown and SD DMA work. The boot shim passes every
 hardware test (EL2 entry, display take-over, PSCI 1.1, GICv2 timer
 interrupts, SD card cold init and reads). Kernels are built by CI on
 GitHub's macOS runners. Day-to-day notes, decisions and every hardware result:

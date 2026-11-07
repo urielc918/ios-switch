@@ -844,6 +844,17 @@ iOS space contiguous; never move/cross the emuMMC).
   CI run 42314315356: success, 224 applied; kernel `work/ci-42314315356/`.
   Test image `work/img-0977b-test/bl33.bin` (bf3f552d...) replaces the first
   one in `switchroot/ios-test/` ("iOS NX (battery test)").
+- **0977 (fixed) on hardware (2026-11-06, log `work/ioslog-battery2.bin/.txt`)**:
+  **works**: `SWEET BATTERY: MAX17050 fuel gauge, 24% 3781mV external=1
+  charging=1`, `NX BATTERY: 24% 3781mV 21mA 1116/4545 mAh (design 4667)
+  38.44 C chg=0x6c external=1 charging=1`. iOS status bar: 24% with the
+  charging icon (user). chg 0x6c = VBUS 01 (USB host port), CHRG 10 (fast
+  charge), PG. Only +21 mA net while running from a PC port: use the
+  official adapter to actually charge. Battery health 4545/4667 = 97%.
+  Not checked: unplug/replug response, hekate's percentage.
+  - **0977 is the main image**: `switchroot/ios/bl33.bin` = bf3f552d...
+    (`work/img-0977b-test/`, main cmdline); previous main kept as
+    `bl33-0976.bin` (f2d74797...). Battery test entry removed.
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

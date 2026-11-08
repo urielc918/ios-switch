@@ -1303,6 +1303,12 @@ iOS space contiguous; never move/cross the emuMMC).
   cmdline + `nxjc=1`) replaced the 0985 report in `switchroot/ios-test/`
   (0985 image kept in `work/img-0985-test/`), entry "iOS NX (Joy-Con UART
   test)". Main unchanged.
+- **0986 on hardware (log `logs/ioslog-joyconuart-test.bin/.txt`, both
+  attached): works.** `NX JC: left: handshake ok (try 1)`, `left: type 0x1
+  (Joy-Con (L)), MAC c8:48:05:81:78:14`, `right: handshake ok (try 1)`,
+  `right: type 0x2 (Joy-Con (R)), MAC c8:48:05:11:3f:73`. Shared 5 V
+  regulator: fan still switched 0 -> 51 at 42.00 C with the rails as
+  users. No panic; volume-up restart to hekate.
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

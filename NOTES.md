@@ -1417,6 +1417,11 @@ iOS space contiguous; never move/cross the emuMMC).
   VECTOR, PMC_SCRATCH39; CLK_SOURCE_EMC, EMC_MRW3, EMC_FBIO_CFG5; 8 words at
   the vector (if IRAM or DRAM < 4 GiB); bpmpfw image start and entry
   (address from bl31's MTC table base - 512 KiB + 768 KiB). Read-only.
+  CI run 42456288009: success, 235 applied, same error lines; kernel
+  `work/ci-42456288009/`. Test image `work/img-0988-test/bl33.bin` (main
+  cmdline + `nxbpmp=1`, i.e. nxcpu=1224 nxjc=1 nxbpmp=1; shim from the
+  local copy of the main image) built; to go on the card as "iOS NX (BPMP
+  report)" when the card is back in the PC.
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

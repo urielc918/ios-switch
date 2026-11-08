@@ -1,4 +1,4 @@
-From c23346c9a6cb4cac0dbe1016d61cb3b60307375a Mon Sep 17 00:00:00 2001
+From e1d8664bfa729faa7b5dd1315daeb775d29adf8c Mon Sep 17 00:00:00 2001
 From: x <x@x>
 Date: Sat, 7 Nov 2026 19:24:50 -0800
 Subject: [PATCH] nx-0987: Joy-Con input with nxjc=1: 3 Mbaud, HID connect, 15
@@ -6,14 +6,14 @@ Subject: [PATCH] nx-0987: Joy-Con input with nxjc=1: 3 Mbaud, HID connect, 15
  buttons), reconnect after 1.8 s without input
 
 ---
- bsd/dev/nx_input.c | 300 ++++++++++++++++++++++++++++++++++++++-------
- 1 file changed, 256 insertions(+), 44 deletions(-)
+ bsd/dev/nx_input.c | 287 ++++++++++++++++++++++++++++++++++++++-------
+ 1 file changed, 243 insertions(+), 44 deletions(-)
 
 diff --git a/bsd/dev/nx_input.c b/bsd/dev/nx_input.c
-index a3464fa..9f53a81 100644
+index a3464fa..1de22cc 100644
 --- a/bsd/dev/nx_input.c
 +++ b/bsd/dev/nx_input.c
-@@ -395,6 +395,32 @@ touch_thread(__unused void *arg, __unused wait_result_t wr)
+@@ -395,6 +395,31 @@ touch_thread(__unused void *arg, __unused wait_result_t wr)
  	}
  }
  
@@ -26,7 +26,6 @@ index a3464fa..9f53a81 100644
 +#define KEYSRC_BUTTONS          (1u << 0)
 +#define KEYSRC_JC_L             (1u << 1)
 +#define KEYSRC_JC_R             (1u << 2)
-+#define KEYSRC_JC_CAPTURE       (1u << 3)
 +static uint32_t key_src[4];
 +static LCK_MTX_DECLARE(key_lock, &nx_input_grp);
 +
@@ -46,7 +45,7 @@ index a3464fa..9f53a81 100644
  static void
  keys_wait(void)
  {
-@@ -431,7 +457,7 @@ keys_thread(__unused void *arg, __unused wait_result_t wr)
+@@ -431,7 +456,7 @@ keys_thread(__unused void *arg, __unused wait_result_t wr)
  				state[k] = now[k];
  				printf("NX KEYS: %s %s\n", k == 0 ? "power" : k == 1 ? "volume-up" :
  				    k == 2 ? "volume-down" : "home (vol+ and vol-)", state[k] ? "down" : "up");
@@ -55,7 +54,7 @@ index a3464fa..9f53a81 100644
  			}
  		}
  		keys_wait();
-@@ -1508,8 +1534,8 @@ nx_jc_report(void)
+@@ -1508,8 +1533,8 @@ nx_jc_report(void)
   *    01 00 00 00 00 24, reply cmd 0x94 subcmd 0x01 status 0: payload[0] =
   *    type (1 left, 2 right, 0x2x Hori), payload[1..6] = MAC (reversed).
   * Replies start with 19 81 03; header 12 bytes (cmd @5, subcmd @6, status
@@ -66,7 +65,7 @@ index a3464fa..9f53a81 100644
   */
  #define UART_PA                 0x70006000u
  #define CAR_RST_DEV_L_SET       0x300u
-@@ -1535,15 +1561,22 @@ nx_jc_report(void)
+@@ -1535,15 +1560,22 @@ nx_jc_report(void)
  struct nx_jc {
  	const char *name;
  	uint32_t uart_off, rst_set, enb_set, bit, src, charge_port, charge_pin, gpio_port, gpio_pin, reg5v;
@@ -92,7 +91,7 @@ index a3464fa..9f53a81 100644
  
  static uint64_t
  jc_now_us(void)
-@@ -1554,7 +1587,17 @@ jc_now_us(void)
+@@ -1554,7 +1586,17 @@ jc_now_us(void)
  }
  
  static void
@@ -111,7 +110,7 @@ index a3464fa..9f53a81 100644
  {
  	wr32(car + jc->rst_set, jc->bit);               /* reset */
  	wr32(car + jc->enb_set + 4, jc->bit);           /* clock off */
-@@ -1563,13 +1606,23 @@ jc_uart_init(struct nx_jc *jc, vm_offset_t car)
+@@ -1563,13 +1605,23 @@ jc_uart_init(struct nx_jc *jc, vm_offset_t car)
  	delay(2);
  	wr32(car + jc->rst_set + 4, jc->bit);           /* out of reset */
  	(void)rd32(car + jc->rst_set);
@@ -136,7 +135,7 @@ index a3464fa..9f53a81 100644
  	(void)rd32(u + U_SPR);
  	wr32(u + U_FCR, 0x01u);                         /* FIFO on */
  	(void)rd32(u + U_SPR);
-@@ -1603,16 +1656,22 @@ jc_send(struct nx_jc *jc, const uint8_t *b, uint32_t n)
+@@ -1603,16 +1655,22 @@ jc_send(struct nx_jc *jc, const uint8_t *b, uint32_t n)
  	}
  }
  
@@ -162,7 +161,7 @@ index a3464fa..9f53a81 100644
  			last = jc_now_us();
  		} else if (jc_now_us() - last > 250) {
  			break;
-@@ -1628,16 +1687,63 @@ jc_reply(struct nx_jc *jc, uint32_t n, uint8_t cmd)
+@@ -1628,16 +1686,63 @@ jc_reply(struct nx_jc *jc, uint32_t n, uint8_t cmd)
  	return n >= 12 && jc->buf[0] == 0x19 && jc->buf[1] == 0x81 && jc->buf[2] == 0x03 && jc->buf[5] == cmd;
  }
  
@@ -229,7 +228,7 @@ index a3464fa..9f53a81 100644
  
  	uint32_t n = 0, tries;
  	bool ok = false;
-@@ -1652,26 +1758,108 @@ jc_bringup(struct nx_jc *jc, vm_offset_t car)
+@@ -1652,26 +1757,96 @@ jc_bringup(struct nx_jc *jc, vm_offset_t car)
  	if (!ok) {
  		printf("NX JC: %s: no handshake reply after 10 tries (last %u bytes, first %02x %02x %02x %02x %02x %02x)\n",
  		    jc->name, n, jc->buf[0], jc->buf[1], jc->buf[2], jc->buf[3], jc->buf[4], jc->buf[5]);
@@ -283,7 +282,7 @@ index a3464fa..9f53a81 100644
 +/*
 + * Buttons (hekate jc_gamepad_rpt_t bits) to iOS keys: minus (8, left) =
 + * volume down, plus (9, right) = volume up, home (12, right) = home,
-+ * capture (13, left) = the screenshot chord, home then power 50 ms apart.
++ * capture (13, left) not mapped (iOS doesn't see Home + Power as a chord).
 + */
 +static void
 +jc_apply(struct nx_jc *jc, uint32_t btn)
@@ -306,25 +305,13 @@ index a3464fa..9f53a81 100644
 +	if (chg & (1u << 12)) {
 +		nx_key(jc->keysrc, 3, !!(btn & (1u << 12)));
 +	}
-+	if (chg & (1u << 13)) {
-+		/*
-+		 * Screenshot chord, timed like a person: Home down, 50 ms, Power
-+		 * down; release Power first, 50 ms, then Home. With both keys
-+		 * microseconds apart SpringBoard missed the chord and took the
-+		 * Power release (after Home's) as a lock press.
-+		 */
-+		if (btn & (1u << 13)) {
-+			nx_key(KEYSRC_JC_CAPTURE, 3, 1);
-+			jc_sleep_ms(50);
-+			nx_key(KEYSRC_JC_CAPTURE, 0, 1);
-+		} else {
-+			nx_key(KEYSRC_JC_CAPTURE, 0, 0);
-+			jc_sleep_ms(50);
-+			nx_key(KEYSRC_JC_CAPTURE, 3, 0);
-+		}
-+	}
- }
- 
++	/*
++	 * Capture (bit 13) is not mapped: iOS doesn't take SweetHIDButtons' Home +
++	 * Power as the screenshot chord (not even with the real power button),
++	 * and the emulated chord only locked the screen. See NOTES.md.
++	 */
++}
++
 +static void
 +jc_lost(struct nx_jc *jc, const char *why)
 +{
@@ -333,8 +320,8 @@ index a3464fa..9f53a81 100644
 +	jc->ready = false;
 +	gpio_msk(GPIO_MSK_OUT, jc->charge_port, jc->charge_pin, 0);
 +	reg5v_set(jc->reg5v, false);
-+}
-+
+ }
+ 
 +/*
 + * Poll loop: connect attached Joy-Cons (retry every second), ask each for a
 + * status report (19 01 03 08 00 92 00 01 00 00 69 2D 1F), sleep 15 ms, read
@@ -348,7 +335,7 @@ index a3464fa..9f53a81 100644
  	vm_offset_t car = ml_io_map(CAR_PA_BAT, 0x1000), uart = ml_io_map(UART_PA, 0x1000);
  	vm_offset_t pinmux = ml_io_map(PINMUX_PA, 0x1000);
  	if (!car || !uart || !pinmux) {
-@@ -1679,27 +1867,51 @@ nx_jc_thread(__unused void *arg, __unused wait_result_t wr)
+@@ -1679,27 +1854,51 @@ nx_jc_thread(__unused void *arg, __unused wait_result_t wr)
  		return;
  	}
  	for (int i = 0; i < 2; i++) {

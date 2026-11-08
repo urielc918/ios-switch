@@ -1366,6 +1366,10 @@ iOS space contiguous; never move/cross the emuMMC).
   needs research in the iOS 16.7 backboardd/SpringBoard binaries (root
   image). Correction: `SWEET AKS: SpringBoard sel 26/27` appear all through
   boot without key presses (keystore calls), not a lock signal.
+- **0987 replaced in place again (2026-11-07): Capture unmapped** (user:
+  ship Joy-Con to main with Capture disabled). Home / + / - unchanged;
+  KEYSRC_JC_CAPTURE removed. The screenshot chord is a separate SweetHID /
+  backboardd investigation.
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

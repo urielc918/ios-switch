@@ -1351,6 +1351,21 @@ iOS space contiguous; never move/cross the emuMMC).
   `work/ci-42446518098/`. Test image `work/img-0987b-test/bl33.bin` (same
   cmdline, nxcpu=1224 nxjc=1) replaced the first 0987 build in
   `switchroot/ios-test/`, entry "iOS NX (Joy-Con buttons)".
+- **0987b on hardware (log `logs/ioslog-joycon-capture2.bin/.txt`)**:
+  Capture still locks the screen, with the new timing (`key 0x40 down`,
+  `key 0x30 down`, `0x30 up`, `0x40 up`). **The manual chord also locks**
+  (user held Joy-Con Home and pressed the real power button; log: `NX KEYS:
+  power down` -> `key 0x30 down`, `key 0x40 down`, `0x40 up`, `power up`),
+  repeated several times. So iOS doesn't take our Home (consumer Menu
+  0x40) + Power (consumer Power 0x30) as the screenshot chord at all,
+  whatever the source or timing; the Joy-Con side is fine. Both keys come
+  from one IOHIDEventService, SweetHIDButtons (bsd SweetHID.cpp: primary
+  usage Consumer / ConsumerControl, BuiltIn true, HIDServiceSupport). On a
+  real iPhone 8 backboardd/SpringBoard presumably need the home and lock
+  buttons from services they classify as the hardware home/lock buttons;
+  needs research in the iOS 16.7 backboardd/SpringBoard binaries (root
+  image). Correction: `SWEET AKS: SpringBoard sel 26/27` appear all through
+  boot without key presses (keystore calls), not a lock signal.
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

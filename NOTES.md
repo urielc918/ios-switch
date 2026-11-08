@@ -1331,6 +1331,11 @@ iOS space contiguous; never move/cross the emuMMC).
     Home, capture (13) = Home + Power together (iOS screenshot; Home is
     pressed first). Sticks/ABXY/L/R unused. Log: `NX JC: <side>: HID
     connected at 3 Mbaud`, `NX JC: <side> buttons 0x...` (first 40).
+  CI run 42442616824: success, 234 applied, same error lines; kernel
+  `work/ci-42442616824/`. Test image `work/img-0987-test/bl33.bin` (main
+  cmdline + `nxjc=1`) replaced the 0986 UART test in `switchroot/ios-test/`
+  (0986 image kept in `work/img-0986-test/`), entry "iOS NX (Joy-Con
+  buttons)". Main unchanged.
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

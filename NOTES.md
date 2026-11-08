@@ -1378,8 +1378,8 @@ iOS space contiguous; never move/cross the emuMMC).
   Joy-Con Home / + / - as iOS Home / volume, rails charged, reconnect.
   Previous main (0982, 763b8d80...) kept as `bl33-0982.bin`. Test entry
   "iOS NX (Joy-Con buttons)" and `switchroot/ios-test/` removed; hekate
-  shows "iOS NX" and L4T. Not booted yet in this exact build (only Capture
-  changed vs the tested 0987b).
+  shows "iOS NX" and L4T. **Booted (user, 2026-11-07): everything still
+  works** (Home / + / -, 1224 MHz).
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

@@ -1347,6 +1347,10 @@ iOS space contiguous; never move/cross the emuMMC).
   the chord (Power before Home had registered) and took the Power release
   after Home's as a lock press. **Fix (0987 replaced in place)**: Home
   down, 50 ms, Power down; release Power, 50 ms, Home.
+  CI run 42446518098: success, 234 applied, same error lines; kernel
+  `work/ci-42446518098/`. Test image `work/img-0987b-test/bl33.bin` (same
+  cmdline, nxcpu=1224 nxjc=1) replaced the first 0987 build in
+  `switchroot/ios-test/`, entry "iOS NX (Joy-Con buttons)".
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

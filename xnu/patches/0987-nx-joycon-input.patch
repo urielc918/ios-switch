@@ -1,4 +1,4 @@
-From 9ebbd4d710aca21caaeb8c31654028660fb54bb9 Mon Sep 17 00:00:00 2001
+From c23346c9a6cb4cac0dbe1016d61cb3b60307375a Mon Sep 17 00:00:00 2001
 From: x <x@x>
 Date: Sat, 7 Nov 2026 19:24:50 -0800
 Subject: [PATCH] nx-0987: Joy-Con input with nxjc=1: 3 Mbaud, HID connect, 15
@@ -6,11 +6,11 @@ Subject: [PATCH] nx-0987: Joy-Con input with nxjc=1: 3 Mbaud, HID connect, 15
  buttons), reconnect after 1.8 s without input
 
 ---
- bsd/dev/nx_input.c | 288 ++++++++++++++++++++++++++++++++++++++-------
- 1 file changed, 244 insertions(+), 44 deletions(-)
+ bsd/dev/nx_input.c | 300 ++++++++++++++++++++++++++++++++++++++-------
+ 1 file changed, 256 insertions(+), 44 deletions(-)
 
 diff --git a/bsd/dev/nx_input.c b/bsd/dev/nx_input.c
-index a3464fa..2e5f82e 100644
+index a3464fa..9f53a81 100644
 --- a/bsd/dev/nx_input.c
 +++ b/bsd/dev/nx_input.c
 @@ -395,6 +395,32 @@ touch_thread(__unused void *arg, __unused wait_result_t wr)
@@ -229,7 +229,7 @@ index a3464fa..2e5f82e 100644
  
  	uint32_t n = 0, tries;
  	bool ok = false;
-@@ -1652,26 +1758,96 @@ jc_bringup(struct nx_jc *jc, vm_offset_t car)
+@@ -1652,26 +1758,108 @@ jc_bringup(struct nx_jc *jc, vm_offset_t car)
  	if (!ok) {
  		printf("NX JC: %s: no handshake reply after 10 tries (last %u bytes, first %02x %02x %02x %02x %02x %02x)\n",
  		    jc->name, n, jc->buf[0], jc->buf[1], jc->buf[2], jc->buf[3], jc->buf[4], jc->buf[5]);
@@ -283,7 +283,7 @@ index a3464fa..2e5f82e 100644
 +/*
 + * Buttons (hekate jc_gamepad_rpt_t bits) to iOS keys: minus (8, left) =
 + * volume down, plus (9, right) = volume up, home (12, right) = home,
-+ * capture (13, left) = power + home together (iOS screenshot).
++ * capture (13, left) = the screenshot chord, home then power 50 ms apart.
 + */
 +static void
 +jc_apply(struct nx_jc *jc, uint32_t btn)
@@ -307,12 +307,24 @@ index a3464fa..2e5f82e 100644
 +		nx_key(jc->keysrc, 3, !!(btn & (1u << 12)));
 +	}
 +	if (chg & (1u << 13)) {
-+		int d = !!(btn & (1u << 13));
-+		nx_key(KEYSRC_JC_CAPTURE, 3, d);
-+		nx_key(KEYSRC_JC_CAPTURE, 0, d);
++		/*
++		 * Screenshot chord, timed like a person: Home down, 50 ms, Power
++		 * down; release Power first, 50 ms, then Home. With both keys
++		 * microseconds apart SpringBoard missed the chord and took the
++		 * Power release (after Home's) as a lock press.
++		 */
++		if (btn & (1u << 13)) {
++			nx_key(KEYSRC_JC_CAPTURE, 3, 1);
++			jc_sleep_ms(50);
++			nx_key(KEYSRC_JC_CAPTURE, 0, 1);
++		} else {
++			nx_key(KEYSRC_JC_CAPTURE, 0, 0);
++			jc_sleep_ms(50);
++			nx_key(KEYSRC_JC_CAPTURE, 3, 0);
++		}
 +	}
-+}
-+
+ }
+ 
 +static void
 +jc_lost(struct nx_jc *jc, const char *why)
 +{
@@ -321,8 +333,8 @@ index a3464fa..2e5f82e 100644
 +	jc->ready = false;
 +	gpio_msk(GPIO_MSK_OUT, jc->charge_port, jc->charge_pin, 0);
 +	reg5v_set(jc->reg5v, false);
- }
- 
++}
++
 +/*
 + * Poll loop: connect attached Joy-Cons (retry every second), ask each for a
 + * status report (19 01 03 08 00 92 00 01 00 00 69 2D 1F), sleep 15 ms, read
@@ -336,7 +348,7 @@ index a3464fa..2e5f82e 100644
  	vm_offset_t car = ml_io_map(CAR_PA_BAT, 0x1000), uart = ml_io_map(UART_PA, 0x1000);
  	vm_offset_t pinmux = ml_io_map(PINMUX_PA, 0x1000);
  	if (!car || !uart || !pinmux) {
-@@ -1679,27 +1855,51 @@ nx_jc_thread(__unused void *arg, __unused wait_result_t wr)
+@@ -1679,27 +1867,51 @@ nx_jc_thread(__unused void *arg, __unused wait_result_t wr)
  		return;
  	}
  	for (int i = 0; i < 2; i++) {

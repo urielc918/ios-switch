@@ -1336,6 +1336,17 @@ iOS space contiguous; never move/cross the emuMMC).
   cmdline + `nxjc=1`) replaced the 0986 UART test in `switchroot/ios-test/`
   (0986 image kept in `work/img-0986-test/`), entry "iOS NX (Joy-Con
   buttons)". Main unchanged.
+- **0987 on hardware (log `logs/ioslog-joycon-buttontest.bin/.txt`, user
+  dump; an earlier "dumped" didn't reach logs/ — the card's ioslog
+  partition sdc4 needs sudo to read): Home, + and - work** (user). Both
+  Joy-Cons: handshake try 1, `HID connected at 3 Mbaud`; button words as
+  expected (right home 0x001000, plus 0x000200; left minus 0x000100,
+  capture 0x002000). **Capture locked the screen**: log shows `SWEET HID:
+  key 0x40 down` then `key 0x30 down` microseconds apart, release 0x40 up
+  then 0x30 up, then `SpringBoard sel 26/27` (lock). SpringBoard missed
+  the chord (Power before Home had registered) and took the Power release
+  after Home's as a lock press. **Fix (0987 replaced in place)**: Home
+  down, 50 ms, Power down; release Power, 50 ms, Home.
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

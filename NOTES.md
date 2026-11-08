@@ -1380,6 +1380,43 @@ iOS space contiguous; never move/cross the emuMMC).
   "iOS NX (Joy-Con buttons)" and `switchroot/ios-test/` removed; hekate
   shows "iOS NX" and L4T. **Booted (user, 2026-11-07): everything still
   works** (Home / + / -, 1224 MHz).
+- **DRAM 1600 via option B (user, 2026-11-07): run hekate's minerva module
+  unmodified on the BPMP; GPU acceleration set aside** (Metal on Maxwell
+  out of reach). Facts gathered:
+  - `libsys_minerva.bso` (hekate v6.5.4 release zip, `work/minerva/`,
+    sha256 73d6c054...; card copy not compared yet): ELF32 ARM PIE, **no
+    relocations, no imports**, PT_LOAD 0x0-0x22958 (RX) + 0x22a58-0x22d3c
+    (RW; file offset 0x22958, placed by vaddr), image 139.3 KiB, Tag_CPU_arch
+    v4T (BPMP = ARM7), `minerva_entry(mtc_config_t *, bdk_params_t *)` at
+    0x5c48 (ARM mode); bp unused; delays from TMR 0x60005010; EPRINTF
+    compiled out. `tools/nx-minerva-check.py` checks these.
+  - minerva is **stateless across calls**: current EMC source from
+    CLK_SOURCE_EMC, LPDDR4 FSP from EMC_MRW3 (bits 7:6); the mtc_config_t
+    fields fsp_for_src_freq / emc_2X_clk_src_is_pllmb are unused. A switch
+    = init_done MTC_INIT_MAGIC (0x3043544D), train_mode OP_SWITCH (0),
+    rate_from/rate_to in kHz, mtc_table + table_entries; periodic training
+    = OP_PERIODIC_TRAIN (3), hekate every 250 ms (EMC_PERIODIC_TRAIN_MS)
+    when rate >= 1066 MHz.
+  - **The BPMP is not idle on Erista**: hekate's L4T launcher jumps into
+    `bpmpfw.bin` (BPMPFW_BASE = SECFW_BASE + 768 KiB, entry + 0x100;
+    101780 bytes; a Little Kernel with threads, timers, `mail_t210.c`
+    mailbox, "bpmp:sc7 exit"), which starts BL31. bl31 (switch-l4t-atf
+    plat_psci_handlers.c) uses it only for CPU_SUSPEND deep idle
+    (MRQ_DO_IDLE) and SC7 suspend, and copes with it being absent. XNU
+    issues neither (its PSCI CPU_OFF/SYSTEM_SUSPEND code is
+    APPLEVIRTUALPLATFORM-only, via hvc), so taking over the BPMP is safe
+    while XNU doesn't suspend.
+  - **Obstacle**: bl31 sets SB_CSR.NS_RST_VEC_WR_DIS (plat_secondary.c
+    plat_secure_cpu_vectors(true)): non-secure code can't write
+    EVP_COP_RESET_VECTOR. A BPMP reset restarts at the existing vector;
+    if that points into NS-writable IRAM/DRAM, our stub can be placed
+    there. bl31's tegra_fc_bpmp_on: FLOW_CTLR HALT_COP_EVENTS = WAITEVENT,
+    CAR RST_DEV_L_SET bit 1, vector, 2 us, RST_DEV_L_CLR bit 1, un-halt.
+- **0988-nx-bpmp-report (written, syntax-checked, pushed for CI)**: boot-arg
+  `nxbpmp=1`: `NX BPMP:` CAR BPMP reset, FLOW HALT_COP_EVENTS, EVP_COP_RESET_
+  VECTOR, PMC_SCRATCH39; CLK_SOURCE_EMC, EMC_MRW3, EMC_FBIO_CFG5; 8 words at
+  the vector (if IRAM or DRAM < 4 GiB); bpmpfw image start and entry
+  (address from bl31's MTC table base - 512 KiB + 768 KiB). Read-only.
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

@@ -1,0 +1,107 @@
+From c657dd725d74dcca26458c04129cc2d7465858c4 Mon Sep 17 00:00:00 2001
+From: x <x@x>
+Date: Sat, 7 Nov 2026 22:49:13 -0800
+Subject: [PATCH] nx-0988: boot-arg nxbpmp=1 logs the BPMP state (reset, halt,
+ EVP_COP_RESET_VECTOR, PMC_SCRATCH39, words at the vector, bpmpfw image) and
+ the EMC state minerva reads, read-only
+
+---
+ bsd/dev/nx_input.c | 75 ++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 75 insertions(+)
+
+diff --git a/bsd/dev/nx_input.c b/bsd/dev/nx_input.c
+index 1de22cc..b13ddc2 100644
+--- a/bsd/dev/nx_input.c
++++ b/bsd/dev/nx_input.c
+@@ -929,6 +929,80 @@ nx_emc_report(void)
+ 	}
+ }
+ 
++/*
++ * Boot-arg nxbpmp=1: BPMP (COP) state, read-only, groundwork for running
++ * hekate's minerva DRAM module on the BPMP.
++ *  - On Erista hekate's L4T launcher jumps into bpmpfw.bin on the BPMP
++ *    (BPMPFW_BASE = SECFW_BASE + 768 KiB, entry + 0x100; a Little Kernel
++ *    firmware with a mailbox driver that starts BL31), instead of halting.
++ *  - bl31 (switch-l4t-atf) uses that firmware only for PSCI CPU_SUSPEND
++ *    deep idle (MRQ_DO_IDLE) and SC7 system suspend; XNU calls neither.
++ *  - bl31 sets SB_CSR.NS_RST_VEC_WR_DIS (plat_secure_cpu_vectors(true)), so
++ *    non-secure code can't write the reset vectors: a BPMP reset restarts at
++ *    whatever EVP_COP_RESET_VECTOR holds. bl31's tegra_fc_bpmp_on: halt
++ *    (FLOW_CTLR HALT_COP_EVENTS = WAITEVENT), CAR RST_DEV_L bit 1, vector,
++ *    release, un-halt. PMC_SCRATCH39 holds bl31's saved BPMP vector.
++ * Logged: CAR BPMP reset (RST_DEVICES_L bit 1), FLOW_CTLR_HALT_COP_EVENTS
++ * (0x60007004), EVP_COP_RESET_VECTOR (0x6000F200), PMC_SCRATCH39
++ * (0x7000E538), 8 words at the vector if it is in IRAM or DRAM below 4 GiB,
++ * the bpmpfw image start (SECFW_BASE + 768 KiB) and entry, and the EMC state
++ * minerva reads (CLK_SOURCE_EMC, EMC_MRW3 0x7001B138, EMC_FBIO_CFG5 0x104).
++ */
++#define FLOW_CTLR_PA            0x60007000u
++#define FLOW_HALT_COP_EVENTS    0x004u
++#define EVP_PA                  0x6000F000u
++#define EVP_COP_RESET_VECTOR    0x200u
++#define PMC_SCRATCH39           0x538u          /* PMC page 0x7000E000 + 0x400 + 0x138 */
++#define EMC_PA                  0x7001B000u
++#define EMC_MRW3                0x138u
++#define EMC_FBIO_CFG5           0x104u
++#define  CAR_L_BPMP             (1u << 1)
++
++static void
++bpmp_dump(const char *what, uint32_t pa)
++{
++	vm_offset_t m = ml_io_map(pa & ~0xFFFu, 0x2000);
++	if (!m) {
++		printf("NX BPMP: %s %#x: mapping failed\n", what, pa);
++		return;
++	}
++	vm_offset_t a = m + (pa & 0xFFFu);
++	printf("NX BPMP: %s %#x: %08x %08x %08x %08x %08x %08x %08x %08x\n", what, pa,
++	    rd32(a), rd32(a + 4), rd32(a + 8), rd32(a + 12), rd32(a + 16), rd32(a + 20), rd32(a + 24), rd32(a + 28));
++}
++
++static void
++nx_bpmp_report(void)
++{
++	uint32_t on = 0;
++	if (!PE_parse_boot_argn("nxbpmp", &on, sizeof(on)) || on != 1) {
++		return;
++	}
++	vm_offset_t car = ml_io_map(CAR_PA_BAT, 0x1000), flow = ml_io_map(FLOW_CTLR_PA, 0x1000);
++	vm_offset_t evp = ml_io_map(EVP_PA, 0x1000), pmc = ml_io_map(PMC_PA, 0x1000), emc = ml_io_map(EMC_PA, 0x1000);
++	if (!car || !flow || !evp || !pmc || !emc) {
++		printf("NX BPMP: MMIO mapping failed\n");
++		return;
++	}
++	uint32_t vec = rd32(evp + EVP_COP_RESET_VECTOR);
++	printf("NX BPMP: CAR reset %u, FLOW HALT_COP_EVENTS %#x, EVP_COP_RESET_VECTOR %#x, PMC_SCRATCH39 %#x\n",
++	    !!(rd32(car + CAR_RST_DEVICES_L) & CAR_L_BPMP), rd32(flow + FLOW_HALT_COP_EVENTS), vec, rd32(pmc + PMC_SCRATCH39));
++	printf("NX BPMP: EMC: CLK_SOURCE_EMC %#x, EMC_MRW3 %#x, EMC_FBIO_CFG5 %#x\n",
++	    rd32(car + CAR_CLK_SOURCE_EMC), rd32(emc + EMC_MRW3), rd32(emc + EMC_FBIO_CFG5));
++	if ((vec >= 0x40000000u && vec < 0x40040000u) || (vec >= 0x80000000u && vec <= 0xFFFFE000u)) {
++		bpmp_dump("at vector", vec & ~3u);
++	} else {
++		printf("NX BPMP: vector not in IRAM or DRAM below 4 GiB, not read\n");
++	}
++	/* bpmpfw.bin, from bl31's view of hekate's SECFW layout: MTC table base - 512 KiB + 768 KiB. */
++	uint64_t mtc = 0;
++	if (sip_emc(EMC_TABLE_ADDR, &mtc) == 0 && mtc >= 0x80080000ull && mtc < 0xFFF00000ull) {
++		uint32_t fw = (uint32_t)mtc - 0x80000u + 0xC0000u;
++		bpmp_dump("bpmpfw start", fw);
++		bpmp_dump("bpmpfw entry", fw + 0x100u);
++	}
++}
++
+ /*
+  * Boot-arg nxcpu=1020|1122|1224 (MHz): raise the CPU clock (PLLX) and the
+  * MAX77621 CPU rail. Off by default.
+@@ -1914,6 +1988,7 @@ nx_input_start(void)
+ 		return;
+ 	}
+ 	started = true;
++	nx_bpmp_report();
+ 	uint32_t perf = 0;
+ 	if (PE_parse_boot_argn("nxperf", &perf, sizeof(perf)) && perf == 1) {
+ 		nx_perf_report();
+-- 
+2.55.0
+

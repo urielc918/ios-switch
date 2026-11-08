@@ -1370,6 +1370,16 @@ iOS space contiguous; never move/cross the emuMMC).
   ship Joy-Con to main with Capture disabled). Home / + / - unchanged;
   KEYSRC_JC_CAPTURE removed. The screenshot chord is a separate SweetHID /
   backboardd investigation.
+  CI run 42448249805: success, 234 applied, same error lines; kernel
+  `work/ci-42448249805/`.
+- **New main image (2026-11-07): 0987 kernel with `nxcpu=1224 nxjc=1`.**
+  `switchroot/ios/bl33.bin` = a69476db... (`work/img-0987-main/`: proven
+  shim + payload, main cmdline + nxjc=1). Every "iOS NX" boot: CPU 1224 MHz,
+  Joy-Con Home / + / - as iOS Home / volume, rails charged, reconnect.
+  Previous main (0982, 763b8d80...) kept as `bl33-0982.bin`. Test entry
+  "iOS NX (Joy-Con buttons)" and `switchroot/ios-test/` removed; hekate
+  shows "iOS NX" and L4T. Not booted yet in this exact build (only Capture
+  changed vs the tested 0987b).
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

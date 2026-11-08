@@ -1309,6 +1309,28 @@ iOS space contiguous; never move/cross the emuMMC).
   `right: type 0x2 (Joy-Con (R)), MAC c8:48:05:11:3f:73`. Shared 5 V
   regulator: fan still switched 0 -> 51 at 42.00 C with the rails as
   users. No panic; volume-up restart to hekate.
+- **0987-nx-joycon-input (written, syntax-checked, pushed for CI)**, nxjc=1:
+  - Keys merge: `nx_key(src, k, down)`: a key is down while any source
+    (KEYSRC_BUTTONS, JC_L, JC_R, JC_CAPTURE) holds it; sweet_hid_key only on
+    merged changes, under key_lock (also serializes the calls). keys_thread
+    now goes through it.
+  - jc_connect (hekate _jc_conn_init): power + charge, UART clock, 1 Mbaud,
+    wake + handshake, info (Hori refused), 3 Mbaud switch 19 01 03 0F 00 91
+    20 08 00 00 BD B1 C0 C6 2D 00 00 00 00 00 (reply subcmd 0x20 status 0;
+    UART re-set up: source divider 15 = PLLP/8.5 = 48 MHz, LCR 0x07 = 8n2,
+    hekate uses 2 stop bits above 1 Mbaud; not acked -> stays at 1 Mbaud),
+    HID disconnect until status 0x0F (10 x 5 ms), HID connect (status 0),
+    report rate 15 ms (subcmd 0x12).
+  - Poll thread: unattached/failed sides detected and connected every 1 s;
+    every loop: status request 19 01 03 08 00 92 00 01 00 00 69 2D 1F to
+    each ready side, sleep 15 ms, read (manual RTS: the Joy-Con holds the
+    reply until RTS drops); reply cmd 0x92 with HID 0x30/0x21 at byte 12,
+    buttons = bytes 15..17 (hekate bits) masked per side (L 0xFF2900, R
+    0x0056FF). No valid report for 1.8 s -> keys released, power off, retry.
+  - Mapping: minus (bit 8) = volume down, plus (9) = volume up, home (12) =
+    Home, capture (13) = Home + Power together (iOS screenshot; Home is
+    pressed first). Sticks/ABXY/L/R unused. Log: `NX JC: <side>: HID
+    connected at 3 Mbaud`, `NX JC: <side> buttons 0x...` (first 40).
 - shim-nx background is now **red** (0xFFA00000, user's request) from
   stage 2 on and for the loader screen; panic screens stay blue.
 - Tools: the user installed apfs-fuse, hfsprogs (mkfs.hfsplus/

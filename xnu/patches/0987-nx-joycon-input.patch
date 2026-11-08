@@ -1,0 +1,413 @@
+From 9ebbd4d710aca21caaeb8c31654028660fb54bb9 Mon Sep 17 00:00:00 2001
+From: x <x@x>
+Date: Sat, 7 Nov 2026 19:24:50 -0800
+Subject: [PATCH] nx-0987: Joy-Con input with nxjc=1: 3 Mbaud, HID connect, 15
+ ms status poll, Home/+/-/Capture to iOS keys (merged with the hardware
+ buttons), reconnect after 1.8 s without input
+
+---
+ bsd/dev/nx_input.c | 288 ++++++++++++++++++++++++++++++++++++++-------
+ 1 file changed, 244 insertions(+), 44 deletions(-)
+
+diff --git a/bsd/dev/nx_input.c b/bsd/dev/nx_input.c
+index a3464fa..2e5f82e 100644
+--- a/bsd/dev/nx_input.c
++++ b/bsd/dev/nx_input.c
+@@ -395,6 +395,32 @@ touch_thread(__unused void *arg, __unused wait_result_t wr)
+ 	}
+ }
+ 
++/*
++ * iOS keys from several sources (GPIO/PMIC buttons, Joy-Cons): a key is down
++ * while any source holds it; sweet_hid_key() is only called on a change of
++ * the merged state, under one lock (which also serializes the calls).
++ * Keys: 0 power, 1 volume up, 2 volume down, 3 home.
++ */
++#define KEYSRC_BUTTONS          (1u << 0)
++#define KEYSRC_JC_L             (1u << 1)
++#define KEYSRC_JC_R             (1u << 2)
++#define KEYSRC_JC_CAPTURE       (1u << 3)
++static uint32_t key_src[4];
++static LCK_MTX_DECLARE(key_lock, &nx_input_grp);
++
++static void
++nx_key(uint32_t src, int k, int down)
++{
++	lck_mtx_lock(&key_lock);
++	int was = key_src[k] != 0;
++	key_src[k] = down ? (key_src[k] | src) : (key_src[k] & ~src);
++	int now = key_src[k] != 0;
++	if (now != was) {
++		sweet_hid_key(k, now);
++	}
++	lck_mtx_unlock(&key_lock);
++}
++
+ static void
+ keys_wait(void)
+ {
+@@ -431,7 +457,7 @@ keys_thread(__unused void *arg, __unused wait_result_t wr)
+ 				state[k] = now[k];
+ 				printf("NX KEYS: %s %s\n", k == 0 ? "power" : k == 1 ? "volume-up" :
+ 				    k == 2 ? "volume-down" : "home (vol+ and vol-)", state[k] ? "down" : "up");
+-				sweet_hid_key(k, state[k]);
++				nx_key(KEYSRC_BUTTONS, k, state[k]);
+ 			}
+ 		}
+ 		keys_wait();
+@@ -1508,8 +1534,8 @@ nx_jc_report(void)
+  *    01 00 00 00 00 24, reply cmd 0x94 subcmd 0x01 status 0: payload[0] =
+  *    type (1 left, 2 right, 0x2x Hori), payload[1..6] = MAC (reversed).
+  * Replies start with 19 81 03; header 12 bytes (cmd @5, subcmd @6, status
+- * @9, payload @12). The UARTs stay at 1 Mbaud; the 3 Mbaud switch and HID
+- * input reports come next.
++ * @9, payload @12). Then 3 Mbaud, HID connect and a 15 ms input poll that
++ * maps buttons to iOS keys (see jc_connect, jc_apply, nx_jc_thread).
+  */
+ #define UART_PA                 0x70006000u
+ #define CAR_RST_DEV_L_SET       0x300u
+@@ -1535,15 +1561,22 @@ nx_jc_report(void)
+ struct nx_jc {
+ 	const char *name;
+ 	uint32_t uart_off, rst_set, enb_set, bit, src, charge_port, charge_pin, gpio_port, gpio_pin, reg5v;
++	uint32_t keysrc, btn_mask;
+ 	vm_offset_t u;
+-	uint8_t buf[64];
++	bool ready, attached;
++	uint32_t buttons, logged;
++	uint64_t last_rx_us, retry_us;
++	uint8_t buf[128];
+ };
+ static struct nx_jc nx_jc_dev[2] = {
+ 	{ "left", 0x200, CAR_RST_DEV_H_SET, CAR_CLK_ENB_H_SET, CAR_H_UARTC, CAR_CLK_SOURCE_UARTC,
+-	  GPIO_PORT_CC, 3, GPIO_PORT_E, 6, REG5V_JC_L, 0, { 0 } },
++	  GPIO_PORT_CC, 3, GPIO_PORT_E, 6, REG5V_JC_L, KEYSRC_JC_L, 0xFF2900u,
++	  0, false, false, 0, 0, 0, 0, { 0 } },
+ 	{ "right", 0x40, CAR_RST_DEV_L_SET, CAR_CLK_ENB_L_SET, CAR_L_UARTB, CAR_CLK_SOURCE_UARTB,
+-	  GPIO_PORT_K, 3, GPIO_PORT_H, 6, REG5V_JC_R, 0, { 0 } },
++	  GPIO_PORT_K, 3, GPIO_PORT_H, 6, REG5V_JC_R, KEYSRC_JC_R, 0x0056FFu,
++	  0, false, false, 0, 0, 0, 0, { 0 } },
+ };
++static int jc_chan;
+ 
+ static uint64_t
+ jc_now_us(void)
+@@ -1554,7 +1587,17 @@ jc_now_us(void)
+ }
+ 
+ static void
+-jc_uart_init(struct nx_jc *jc, vm_offset_t car)
++jc_sleep_ms(uint32_t ms)
++{
++	uint64_t deadline;
++	clock_interval_to_deadline(ms, NSEC_PER_MSEC, &deadline);
++	(void)assert_wait_deadline(&jc_chan, THREAD_UNINT, deadline);
++	(void)thread_block(THREAD_CONTINUE_NULL);
++}
++
++/* CAR: reset, clock source, clock on, out of reset (hekate clock_enable). */
++static void
++jc_uart_clock(struct nx_jc *jc, vm_offset_t car)
+ {
+ 	wr32(car + jc->rst_set, jc->bit);               /* reset */
+ 	wr32(car + jc->enb_set + 4, jc->bit);           /* clock off */
+@@ -1563,13 +1606,23 @@ jc_uart_init(struct nx_jc *jc, vm_offset_t car)
+ 	delay(2);
+ 	wr32(car + jc->rst_set + 4, jc->bit);           /* out of reset */
+ 	(void)rd32(car + jc->rst_set);
++}
+ 
++/*
++ * UART setup (hekate uart_init + uart_invert). fast: 3 Mbaud = PLLP / 8.5 =
++ * 48 MHz (source divider 15) and 2 stop bits (hekate: above 1 Mbaud).
++ */
++static void
++jc_uart_setup(struct nx_jc *jc, vm_offset_t car, bool fast)
++{
+ 	vm_offset_t u = jc->u;
++	uint32_t lcr = fast ? 0x07u : 0x03u;
++	wr32(car + jc->src, (1u << 24) | (fast ? 15u : 49u));
+ 	wr32(u + U_IER, 0);
+ 	wr32(u + U_LCR, 0x80u | 0x03u);                 /* DLAB, 8n1 */
+ 	wr32(u + U_THR, 1);                             /* divisor latch 1 */
+ 	wr32(u + U_IER, 0);
+-	wr32(u + U_LCR, 0x03u);
++	wr32(u + U_LCR, lcr);
+ 	(void)rd32(u + U_SPR);
+ 	wr32(u + U_FCR, 0x01u);                         /* FIFO on */
+ 	(void)rd32(u + U_SPR);
+@@ -1603,16 +1656,22 @@ jc_send(struct nx_jc *jc, const uint8_t *b, uint32_t n)
+ 	}
+ }
+ 
+-/* Read until 250 us without a byte (hekate's uart_recv), RTS dropped meanwhile. */
++/*
++ * Read until 250 us without a byte (hekate's uart_recv). With manual RTS the
++ * Joy-Con holds its reply until RTS is dropped here.
++ */
+ static uint32_t
+ jc_recv(struct nx_jc *jc)
+ {
+ 	uint32_t n = 0;
+ 	wr32(jc->u + U_MCR, rd32(jc->u + U_MCR) & ~U_MCR_RTS);
+ 	uint64_t last = jc_now_us();
+-	while (n < sizeof(jc->buf)) {
++	for (;;) {
+ 		if (rd32(jc->u + U_LSR) & U_LSR_RDR) {
+-			jc->buf[n++] = (uint8_t)rd32(jc->u + U_THR);
++			uint8_t c = (uint8_t)rd32(jc->u + U_THR);
++			if (n < sizeof(jc->buf)) {
++				jc->buf[n++] = c;
++			}
+ 			last = jc_now_us();
+ 		} else if (jc_now_us() - last > 250) {
+ 			break;
+@@ -1628,16 +1687,63 @@ jc_reply(struct nx_jc *jc, uint32_t n, uint8_t cmd)
+ 	return n >= 12 && jc->buf[0] == 0x19 && jc->buf[1] == 0x81 && jc->buf[2] == 0x03 && jc->buf[5] == cmd;
+ }
+ 
+-static void
+-jc_bringup(struct nx_jc *jc, vm_offset_t car)
++/* Send a wired command, wait, read; true for an init reply (0x94) to subcmd with the wanted status. */
++static bool
++jc_cmd(struct nx_jc *jc, const uint8_t *pkt, uint32_t len, uint32_t wait_ms, uint8_t subcmd, int status)
++{
++	jc_send(jc, pkt, len);
++	delay(wait_ms * 1000);
++	uint32_t n = jc_recv(jc);
++	return jc_reply(jc, n, 0x94) && jc->buf[6] == subcmd && (status < 0 || jc->buf[9] == (uint8_t)status);
++}
++
++/* Attach detect (as nx_jc_report), the TX pin switched back to the UART afterwards. */
++static bool
++jc_detect(int i, vm_offset_t pinmux)
++{
++	struct nx_jc *jc = &nx_jc_dev[i];
++	uint32_t reg = i ? PINMUX_UART2_TX : PINMUX_UART3_TX;
++	uint32_t pm = rd32(pinmux + reg);
++	uint32_t tx_port = i ? GPIO_PORT_G : GPIO_PORT_D, tx_pin = i ? 0 : 1;
++	uint32_t cnf = gpio_bit(0x00, tx_port, tx_pin), oe = gpio_bit(0x10, tx_port, tx_pin);
++	wr32(pinmux + reg, PM_INPUT_ENABLE);
++	gpio_msk(GPIO_MSK_OE, tx_port, tx_pin, 0);
++	gpio_msk(GPIO_MSK_CNF, tx_port, tx_pin, 1);
++	delay(20);
++	(void)gpio_bit(0x30, jc->gpio_port, jc->gpio_pin);
++	uint32_t det = gpio_bit(0x30, jc->gpio_port, jc->gpio_pin);
++	wr32(pinmux + reg, pm);
++	gpio_msk(GPIO_MSK_CNF, tx_port, tx_pin, cnf);
++	gpio_msk(GPIO_MSK_OE, tx_port, tx_pin, oe);
++	delay(20);
++	return det == 0;
++}
++
++/*
++ * Connect as hekate's _jc_conn_init: power, UART at 1 Mbaud, wake +
++ * handshake, info, 3 Mbaud switch (19 01 03 0F 00 91 20 08 00 00 BD B1 C0
++ * C6 2D 00 00 00 00 00; reply subcmd 0x20 status 0; if not acked, stay at
++ * 1 Mbaud), HID disconnect until status 0x0F (19 01 03 07 00 91 11 00 00 00
++ * 00 0E, 10 x 5 ms), HID connect (... 91 10 ... 3D, status 0), report rate
++ * 15 ms (19 01 03 0B 00 91 12 04 00 00 12 A6 0F 00 00 00, subcmd 0x12).
++ */
++static bool
++jc_connect(struct nx_jc *jc, vm_offset_t car)
+ {
+ 	static const uint8_t wake[] = { 0xA1, 0xA2, 0xA3, 0xA4 };
+ 	static const uint8_t hs[] = { 0x19, 0x01, 0x03, 0x07, 0x00, 0xA5, 0x02, 0x01, 0x7E, 0x00, 0x00, 0x00 };
+ 	static const uint8_t info[] = { 0x19, 0x01, 0x03, 0x07, 0x00, 0x91, 0x01, 0x00, 0x00, 0x00, 0x00, 0x24 };
++	static const uint8_t brate[] = { 0x19, 0x01, 0x03, 0x0F, 0x00, 0x91, 0x20, 0x08, 0x00, 0x00, 0xBD, 0xB1,
++		                         0xC0, 0xC6, 0x2D, 0x00, 0x00, 0x00, 0x00, 0x00 };
++	static const uint8_t hid_disc[] = { 0x19, 0x01, 0x03, 0x07, 0x00, 0x91, 0x11, 0x00, 0x00, 0x00, 0x00, 0x0E };
++	static const uint8_t hid_conn[] = { 0x19, 0x01, 0x03, 0x07, 0x00, 0x91, 0x10, 0x00, 0x00, 0x00, 0x00, 0x3D };
++	static const uint8_t hid_rate[] = { 0x19, 0x01, 0x03, 0x0B, 0x00, 0x91, 0x12, 0x04, 0x00, 0x00, 0x12, 0xA6,
++		                            0x0F, 0x00, 0x00, 0x00 };
+ 
+ 	reg5v_set(jc->reg5v, true);
+ 	gpio_msk(GPIO_MSK_OUT, jc->charge_port, jc->charge_pin, 1);
+-	jc_uart_init(jc, car);
++	jc_uart_clock(jc, car);
++	jc_uart_setup(jc, car, false);
+ 
+ 	uint32_t n = 0, tries;
+ 	bool ok = false;
+@@ -1652,26 +1758,96 @@ jc_bringup(struct nx_jc *jc, vm_offset_t car)
+ 	if (!ok) {
+ 		printf("NX JC: %s: no handshake reply after 10 tries (last %u bytes, first %02x %02x %02x %02x %02x %02x)\n",
+ 		    jc->name, n, jc->buf[0], jc->buf[1], jc->buf[2], jc->buf[3], jc->buf[4], jc->buf[5]);
+-		return;
++		return false;
+ 	}
+-	printf("NX JC: %s: handshake ok (try %u)\n", jc->name, tries - 1);
+-	jc_send(jc, info, sizeof(info));
+-	delay(2000);
+-	n = jc_recv(jc);
+-	if (!jc_reply(jc, n, 0x94) || jc->buf[6] != 0x01 || jc->buf[9] != 0 || n < 19) {
+-		printf("NX JC: %s: no info reply (%u bytes, cmd %#x subcmd %#x status %#x)\n",
+-		    jc->name, n, n > 5 ? jc->buf[5] : 0, n > 6 ? jc->buf[6] : 0, n > 9 ? jc->buf[9] : 0);
+-		return;
++	if (!jc_cmd(jc, info, sizeof(info), 2, 0x01, 0)) {
++		printf("NX JC: %s: no info reply\n", jc->name);
++		return false;
+ 	}
+ 	const uint8_t *pl = &jc->buf[12];
+-	printf("NX JC: %s: type %#x (%s), MAC %02x:%02x:%02x:%02x:%02x:%02x\n", jc->name, pl[0],
++	printf("NX JC: %s: handshake ok (try %u), type %#x (%s), MAC %02x:%02x:%02x:%02x:%02x:%02x\n",
++	    jc->name, tries - 1, pl[0],
+ 	    (pl[0] & 0x20) ? "Hori" : pl[0] == 1 ? "Joy-Con (L)" : pl[0] == 2 ? "Joy-Con (R)" : "unknown",
+ 	    pl[6], pl[5], pl[4], pl[3], pl[2], pl[1]);
++	if (pl[0] & 0x20) {
++		printf("NX JC: %s: Hori pads not supported yet\n", jc->name);
++		return false;
++	}
++
++	bool fast = jc_cmd(jc, brate, sizeof(brate), 2, 0x20, 0);
++	if (fast) {
++		jc_uart_setup(jc, car, true);
++		bool nohid = false;
++		for (tries = 0; tries < 10 && !nohid; tries++) {
++			nohid = jc_cmd(jc, hid_disc, sizeof(hid_disc), 5, 0x11, 0x0F);
++		}
++		if (!nohid) {
++			printf("NX JC: %s: no HID-disconnect reply at 3 Mbaud\n", jc->name);
++			return false;
++		}
++	}
++	if (!jc_cmd(jc, hid_conn, sizeof(hid_conn), 2, 0x10, 0)) {
++		printf("NX JC: %s: HID connect not acknowledged\n", jc->name);
++		return false;
++	}
++	(void)jc_cmd(jc, hid_rate, sizeof(hid_rate), 2, 0x12, -1);
++	printf("NX JC: %s: HID connected at %s\n", jc->name, fast ? "3 Mbaud" : "1 Mbaud");
++	return true;
++}
++
++/*
++ * Buttons (hekate jc_gamepad_rpt_t bits) to iOS keys: minus (8, left) =
++ * volume down, plus (9, right) = volume up, home (12, right) = home,
++ * capture (13, left) = power + home together (iOS screenshot).
++ */
++static void
++jc_apply(struct nx_jc *jc, uint32_t btn)
++{
++	uint32_t chg = btn ^ jc->buttons;
++	jc->buttons = btn;
++	if (!chg) {
++		return;
++	}
++	if (jc->logged < 40) {
++		jc->logged++;
++		printf("NX JC: %s buttons %#08x\n", jc->name, btn);
++	}
++	if (chg & (1u << 8)) {
++		nx_key(jc->keysrc, 2, !!(btn & (1u << 8)));
++	}
++	if (chg & (1u << 9)) {
++		nx_key(jc->keysrc, 1, !!(btn & (1u << 9)));
++	}
++	if (chg & (1u << 12)) {
++		nx_key(jc->keysrc, 3, !!(btn & (1u << 12)));
++	}
++	if (chg & (1u << 13)) {
++		int d = !!(btn & (1u << 13));
++		nx_key(KEYSRC_JC_CAPTURE, 3, d);
++		nx_key(KEYSRC_JC_CAPTURE, 0, d);
++	}
++}
++
++static void
++jc_lost(struct nx_jc *jc, const char *why)
++{
++	printf("NX JC: %s: %s\n", jc->name, why);
++	jc_apply(jc, 0);                                /* release its keys */
++	jc->ready = false;
++	gpio_msk(GPIO_MSK_OUT, jc->charge_port, jc->charge_pin, 0);
++	reg5v_set(jc->reg5v, false);
+ }
+ 
++/*
++ * Poll loop: connect attached Joy-Cons (retry every second), ask each for a
++ * status report (19 01 03 08 00 92 00 01 00 00 69 2D 1F), sleep 15 ms, read
++ * the replies (cmd 0x92, HID report at byte 12: 0x30/0x21, buttons in bytes
++ * 3-5 = buf 15-17). No valid report for 1.8 s (hekate's reinit time) = lost.
++ */
+ static void
+ nx_jc_thread(__unused void *arg, __unused wait_result_t wr)
+ {
++	static const uint8_t status[] = { 0x19, 0x01, 0x03, 0x08, 0x00, 0x92, 0x00, 0x01, 0x00, 0x00, 0x69, 0x2D, 0x1F };
+ 	vm_offset_t car = ml_io_map(CAR_PA_BAT, 0x1000), uart = ml_io_map(UART_PA, 0x1000);
+ 	vm_offset_t pinmux = ml_io_map(PINMUX_PA, 0x1000);
+ 	if (!car || !uart || !pinmux) {
+@@ -1679,27 +1855,51 @@ nx_jc_thread(__unused void *arg, __unused wait_result_t wr)
+ 		return;
+ 	}
+ 	for (int i = 0; i < 2; i++) {
+-		struct nx_jc *jc = &nx_jc_dev[i];
+-		jc->u = uart + jc->uart_off;
+-		/* Attach detect (as nx_jc_report), with the TX pins switched back to the UART. */
+-		uint32_t pm = rd32(pinmux + (i ? PINMUX_UART2_TX : PINMUX_UART3_TX));
+-		uint32_t tx_port = i ? GPIO_PORT_G : GPIO_PORT_D, tx_pin = i ? 0 : 1;
+-		uint32_t cnf = gpio_bit(0x00, tx_port, tx_pin), oe = gpio_bit(0x10, tx_port, tx_pin);
+-		wr32(pinmux + (i ? PINMUX_UART2_TX : PINMUX_UART3_TX), PM_INPUT_ENABLE);
+-		gpio_msk(GPIO_MSK_OE, tx_port, tx_pin, 0);
+-		gpio_msk(GPIO_MSK_CNF, tx_port, tx_pin, 1);
+-		delay(20);
+-		(void)gpio_bit(0x30, jc->gpio_port, jc->gpio_pin);
+-		uint32_t det = gpio_bit(0x30, jc->gpio_port, jc->gpio_pin);
+-		wr32(pinmux + (i ? PINMUX_UART2_TX : PINMUX_UART3_TX), pm);
+-		gpio_msk(GPIO_MSK_CNF, tx_port, tx_pin, cnf);
+-		gpio_msk(GPIO_MSK_OE, tx_port, tx_pin, oe);
+-		delay(20);
+-		if (det) {
+-			printf("NX JC: %s: not attached, skipped\n", jc->name);
+-			continue;
++		nx_jc_dev[i].u = uart + nx_jc_dev[i].uart_off;
++	}
++	for (;;) {
++		uint64_t now = jc_now_us();
++		for (int i = 0; i < 2; i++) {
++			struct nx_jc *jc = &nx_jc_dev[i];
++			if (jc->ready || now < jc->retry_us) {
++				continue;
++			}
++			jc->retry_us = now + 1000000;
++			bool att = jc_detect(i, pinmux);
++			if (att != jc->attached) {
++				jc->attached = att;
++				printf("NX JC: %s: %s\n", jc->name, att ? "attached" : "not attached");
++			}
++			if (att && jc_connect(jc, car)) {
++				jc->ready = true;
++				jc->last_rx_us = jc_now_us();
++			} else if (att) {
++				jc_lost(jc, "connect failed, retrying in 1 s");
++			}
++		}
++		for (int i = 0; i < 2; i++) {
++			if (nx_jc_dev[i].ready) {
++				jc_send(&nx_jc_dev[i], status, sizeof(status));
++			}
++		}
++		jc_sleep_ms(15);
++		now = jc_now_us();
++		for (int i = 0; i < 2; i++) {
++			struct nx_jc *jc = &nx_jc_dev[i];
++			if (!jc->ready) {
++				continue;
++			}
++			uint32_t n = jc_recv(jc);
++			if (jc_reply(jc, n, 0x92) && n >= 24 && (jc->buf[12] == 0x30 || jc->buf[12] == 0x21)) {
++				uint32_t btn = (uint32_t)jc->buf[15] | (uint32_t)jc->buf[16] << 8 | (uint32_t)jc->buf[17] << 16;
++				jc_apply(jc, btn & jc->btn_mask);
++				jc->last_rx_us = now;
++			} else if (now - jc->last_rx_us > 1800000) {
++				jc->attached = false;
++				jc->retry_us = now;
++				jc_lost(jc, "no input report for 1.8 s, reconnecting");
++			}
+ 		}
+-		jc_bringup(jc, car);
+ 	}
+ }
+ 
+-- 
+2.55.0
+
